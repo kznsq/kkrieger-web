@@ -43,7 +43,6 @@ sU32 sGetRnd()
 {
   sU32 i;
 
-#if sMOBILE
   sU32 eax,ebx;
   eax = sRandomSeed;
   eax = eax*0x343fd+0x269ec3;
@@ -53,28 +52,6 @@ sU32 sGetRnd()
   eax = (eax>>10)&0x0000ffff;
   ebx = (ebx<< 6)&0xffff0000;
   i = eax|ebx;
-#else
-  __asm
-  {
-    mov eax,sRandomSeed
-
-    imul eax,eax,343fdh
-    add eax,269ec3h
-    mov ebx,eax
-
-    imul eax,eax,343fdh
-    add eax,269ec3h
-
-    mov sRandomSeed,eax
-
-    sar eax,10
-    and eax,00000ffffh
-    shl ebx,6
-    and ebx,0ffff0000h
-    or eax,ebx
-    mov i,eax
-  }
-#endif
   return i;
 }
 
@@ -324,7 +301,7 @@ sF32 sRangeF32(sF32 a,sF32 b,sF32 c)
 */
 
 #if !sMOBILE
-#if sINTRO
+#if 0  // x87 versions of acos/fmod/pow/exp for intro builds; the port uses the C library
 
 
 
@@ -1082,12 +1059,10 @@ sBool sScanCycle(const sChar *s,sInt index,sInt &start,sInt &len)
 /***                                                                      ***/
 /****************************************************************************/
 
-#if !sMOBILE
-extern "C" char * __cdecl _fcvt( double value, int count, int *dec, int *sign );
-extern "C" char * __cdecl _ecvt( double value, int count, int *dec, int *sign );
-#endif
+#define _fcvt fcvt
+#define _ecvt ecvt
 
-sBool sFormatString(sChar *d,sInt left,const sChar *s,const sChar **fp)
+sBool sFormatString(sChar *d,sInt left,const sChar *s,va_list *fp)
 {
   sInt c;
   sInt field0;
@@ -1163,18 +1138,18 @@ sBool sFormatString(sChar *d,sInt left,const sChar *s,const sChar **fp)
         if(c=='f' || c=='e')
         {
 #if !sMOBILE
-          fval = sVARARGF(fp,arg);arg+=2;
+          fval = va_arg(*fp,sF64);arg+=2;
 #else
           arg+=2;
 #endif
         }
         else
         {
-          val = sVARARG(fp,arg);arg++;
+          val = va_arg(*fp,sInt);arg++;
         }
         if(c=='f')        // this is preliminary!!!!!!!
         {
-#if sINTRO || sMOBILE
+#if sMOBILE
           string = sTXT("???");
 #else
           if(fval<0)
@@ -1201,7 +1176,7 @@ sBool sFormatString(sChar *d,sInt left,const sChar *s,const sChar **fp)
         }
         else if(c=='e')
         {
-#if sINTRO || sMOBILE
+#if sMOBILE
           string = sTXT("???");
 #else
           if(fval<0)
@@ -1321,7 +1296,7 @@ sBool sFormatString(sChar *d,sInt left,const sChar *s,const sChar **fp)
       }
       else if(c=='c')
       {
-        val = (sInt)sVARARG(fp,arg);arg++;
+        val = va_arg(*fp,sInt);arg++;
         if(left>0)
         {
           *d++ = val;
@@ -1331,7 +1306,7 @@ sBool sFormatString(sChar *d,sInt left,const sChar *s,const sChar **fp)
       }
       else if(c=='s')
       {
-        string = (sChar * )(sDInt)sVARARG(fp,arg);arg++;
+        string = va_arg(*fp,sChar *);arg++;
         len = sGetStringLen(string);
         if(field0<=len)
           field0=len;
@@ -1362,7 +1337,7 @@ sBool sFormatString(sChar *d,sInt left,const sChar *s,const sChar **fp)
       }
       else if(c=='h' || c=='H') 
       {
-        val = sVARARG(fp,arg);arg++;
+        val = va_arg(*fp,sInt);arg++;
         if(c=='H')
         {
           if(sAbs(val)>=0x00010000)
@@ -1411,7 +1386,7 @@ sBool sFormatString(sChar *d,sInt left,const sChar *s,const sChar **fp)
 
 void __cdecl sSPrintF(sChar *buffer,sInt size,const sChar *format,...)
 {
-  sFormatString(buffer,size,format,&format);
+  { va_list fmtap; va_start(fmtap,format); sFormatString(buffer,size,format,&fmtap); va_end(fmtap); }
 }
 
 /****************************************************************************/
@@ -1904,7 +1879,7 @@ void __cdecl sFatal(const sChar *format,...)
   static sChar buffer[1024];
 
 //  sFatality = 1;
-  sFormatString(buffer,sCOUNTOF(buffer),format,&format);
+  { va_list fmtap; va_start(fmtap,format); sFormatString(buffer,sCOUNTOF(buffer),format,&fmtap); va_end(fmtap); }
 
   sOutputDebugString(buffer);
   sOutputDebugString(sTXT("\n"));
@@ -1921,7 +1896,7 @@ void __cdecl sDPrintF(const sChar *format,...)
 {
   sChar buffer[1024];
 
-  sFormatString(buffer,sCOUNTOF(buffer),format,&format);
+  { va_list fmtap; va_start(fmtap,format); sFormatString(buffer,sCOUNTOF(buffer),format,&fmtap); va_end(fmtap); }
 
   sOutputDebugString(buffer);
 }  
@@ -1951,7 +1926,7 @@ void __cdecl sFatal(const sChar *format,...)
   static sChar buffer[1024];
 
   sFatality = 1;
-  sFormatString(buffer,sCOUNTOF(buffer),format,&format);
+  { va_list fmtap; va_start(fmtap,format); sFormatString(buffer,sCOUNTOF(buffer),format,&fmtap); va_end(fmtap); }
 
 #if !sRELEASE
   OutputDebugStringA(buffer);
@@ -1996,7 +1971,7 @@ void __cdecl sDPrintF(const sChar *format,...)
   sChar buffer[1024];
 
 #if !sINTRO
-  sFormatString(buffer,sCOUNTOF(buffer),format,&format);
+  { va_list fmtap; va_start(fmtap,format); sFormatString(buffer,sCOUNTOF(buffer),format,&fmtap); va_end(fmtap); }
   sSystem->Log(buffer);
 #else
   va_list list;
@@ -3265,7 +3240,7 @@ void sFrustum::Normalize()
 
 void sSPrintF(const sStringDesc &desc,const sChar *format,...)
 {
-  sFormatString(desc.Buffer,desc.Size,format,&format);
+  { va_list fmtap; va_start(fmtap,format); sFormatString(desc.Buffer,desc.Size,format,&fmtap); va_end(fmtap); }
 }
 
 /****************************************************************************/
@@ -3735,10 +3710,10 @@ void sText::Print(const sChar *s)
 
 void sText::PrintF(const sChar *format,...)
 {
-  PrintArg(format,&format);
+  va_list fmtap; va_start(fmtap,format); PrintArg(format,&fmtap); va_end(fmtap);
 }
 
-void sText::PrintArg(const sChar *format,const sChar **fp)
+void sText::PrintArg(const sChar *format,va_list *fp)
 {
   if(Alloc==0)
     Realloc(1024);

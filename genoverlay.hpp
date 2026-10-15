@@ -164,7 +164,7 @@ GenIPP * __stdcall Init_IPP_Color(GenIPP *in,sInt size,sU32 color,sInt operation
 GenIPP * __stdcall Init_IPP_Merge(GenIPP *in,GenIPP *in2,sInt size,sInt operation,sInt alpha,sU32 amplify,sInt ocount);
 GenIPP * __stdcall Init_IPP_Mask(GenIPP *in,GenIPP *in2,GenIPP *in3,sInt size,sInt ocount);
 GenIPP * __stdcall Init_IPP_Layer2D(GenIPP *in,GenMaterial *mtrl,sInt size,sF324 screen,sF324 uv,sF32 z,sInt clear,sInt ocount);
-GenIPP * __stdcall Init_IPP_Select(sInt count,GenIPP *in,...);
+GenIPP * __stdcall Init_IPP_Select(sInt count,GenIPP **inl);
 GenIPP * __stdcall Init_IPP_RenderTarget(GenIPP *in,GenBitmap *rt);
 GenIPP * __stdcall Init_IPP_HSCB(GenIPP *in,sInt size,sF32 hue,sF32 sat,sF32 con,sF32 bright,sInt ocount);
 GenIPP * __stdcall Init_IPP_JPEG(GenIPP *in,sInt size,sInt dir,sF32 strength,sInt ocount);

@@ -419,6 +419,8 @@ struct KOp                        // Operator
   KEvent *FirstEvent;             // list of active events for this operator
   void *InitHandler;              // the actual code
   void *ExecHandler;              // the actual code
+  KObject *(*InitThunk)(sU32 *);  // typed call wrappers for InitHandler/ExecHandler (web/thunks.inc)
+  void (*ExecThunk)(sU32 *);
   sInt CalcError;                 // could not calculate cache
   sU32 Convention;                // calling conventions for code
   sU32 ChangeMask;                // which inputs don't update the "change" bit?

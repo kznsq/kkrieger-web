@@ -1,0 +1,5 @@
+web/build/
+*.o
+__pycache__/
+# the game executable is never part of the repository
+*.exe

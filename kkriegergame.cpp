@@ -966,6 +966,8 @@ void KKriegerGame::AddEvents(KEnvironment *kenv)
 
 /****************************************************************************/
 
+sBool KKriegerRelease2004 = sFALSE;        // set by the loader for data from the Breakpoint 2004 executable
+
 void KKriegerGame::ResetRoot(KEnvironment *env,KOp *root,sBool firsttime)
 {
   SetPainter(root,env);

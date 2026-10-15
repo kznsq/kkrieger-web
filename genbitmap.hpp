@@ -54,7 +54,7 @@ GenBitmap * __stdcall Bitmap_Flat(sInt xs,sInt ys,sU32 color);
 GenBitmap * __stdcall Bitmap_Format(GenBitmap *bm,sInt format,sInt count,sInt tresh);
 GenBitmap * __stdcall Bitmap_RenderTarget(sInt xs,sInt ys,sU32 format);
 
-GenBitmap * __stdcall Bitmap_Merge(sInt mode,sInt count,GenBitmap *b0,...);
+GenBitmap * __stdcall Bitmap_Merge(sInt mode,sInt count,GenBitmap **bl);
 GenBitmap * __stdcall Bitmap_Color(GenBitmap *bm,sInt mode,sU32 color);
 GenBitmap * __stdcall Bitmap_Range(GenBitmap *bm,sInt mode,sU32 color0,sU32 color1);
 GenBitmap * __stdcall Bitmap_GlowRect(GenBitmap *bm,sF32 cx,sF32 cy,sF32 rx,sF32 ry,sF32 sx,sF32 sy,sU32 color,sF32 alpha,sF32 power,sU32 wrap,sU32 bugfix);

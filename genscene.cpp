@@ -297,6 +297,16 @@ void ExecSceneInputs(KOp *parent,KEnvironment *kenv,sF32 *srt)
 
 /****************************************************************************/
 
+// Scale, rotation and translation as one array of 9 floats. The parameters
+// are separate by-value structs, which are not guaranteed to be adjacent in
+// memory (on WebAssembly each is its own copy), so they are packed here.
+static void PackSRT(sF32 *srt,const sF323 &s,const sF323 &r,const sF323 &t)
+{
+  srt[0] = s.x; srt[1] = s.y; srt[2] = s.z;
+  srt[3] = r.x; srt[4] = r.y; srt[5] = r.z;
+  srt[6] = t.x; srt[7] = t.y; srt[8] = t.z;
+}
+
 GenScene * __stdcall Init_Scene_Scene(GenMesh *mesh,sF323 s,sF323 r,sF323 t,sBool lightmap)
 {
   GenScene *scene;
@@ -306,19 +316,21 @@ GenScene * __stdcall Init_Scene_Scene(GenMesh *mesh,sF323 s,sF323 r,sF323 t,sBoo
 
   scene = MakeScene(mesh);
   if(scene)
-    sCopyMem(scene->SRT,&s.x,9*4);
+    PackSRT(scene->SRT,s,r,t);
 
   return scene;
 }
 
 void __stdcall Exec_Scene_Scene(KOp *op,KEnvironment *kenv,sF323 s,sF323 r,sF323 t,sBool lightmap)
 {
-  ExecSceneInputs(op,kenv,&s.x);
+  sF32 srt[9];
+  PackSRT(srt,s,r,t);
+  ExecSceneInputs(op,kenv,srt);
 }
 
 /****************************************************************************/
 
-GenScene * __stdcall Init_Scene_Add(sInt count,GenScene *s0,...)
+GenScene * __stdcall Init_Scene_Add(sInt count,GenScene **sl)
 {
   GenScene *scene,*add;
   sInt i;
@@ -326,7 +338,7 @@ GenScene * __stdcall Init_Scene_Add(sInt count,GenScene *s0,...)
   scene = new GenScene;
   for(i=0;i<count;i++)
   {
-    add = MakeScene((&s0)[i]);
+    add = MakeScene(sl[i]);
     if(add)
       *scene->Childs.Add() = add;
   }
@@ -351,7 +363,7 @@ GenScene * __stdcall Init_Scene_Multiply(GenScene *add,sF323 s,sF323 r,sF323 t,s
   scene = new GenScene;
   *scene->Childs.Add() = add;
   scene->Count = count;
-  sCopyMem(scene->SRT,&s.x,9*4);
+  PackSRT(scene->SRT,s,r,t);
 
   return scene;
 }
@@ -362,8 +374,10 @@ void __stdcall Exec_Scene_Multiply(KOp *op,KEnvironment *kenv,sF323 s,sF323 r,sF
   sInt i;
   sVector save;
 
+  sF32 srt[9];
+  PackSRT(srt,s,r,t);
   kenv->ExecStack.Dup();
-  mat.InitSRT(&s.x);
+  mat.InitSRT(srt);
   save = kenv->Var[KV_SELECT];
   for(i=0;i<count;i++)
   {
@@ -386,7 +400,9 @@ GenScene * __stdcall Init_Scene_Transform(GenScene *add,sF323 s,sF323 r,sF323 t)
 
 void __stdcall Exec_Scene_Transform(KOp *op,KEnvironment *kenv,sF323 s,sF323 r,sF323 t)
 {
-  ExecSceneInputs(op,kenv,&s.x);
+  sF32 srt[9];
+  PackSRT(srt,s,r,t);
+  ExecSceneInputs(op,kenv,srt);
 }
 
 /****************************************************************************/
@@ -448,7 +464,7 @@ GenScene * __stdcall Init_Scene_Camera(sF323 s,sF323 r,sF323 t)
   GenScene *scene;
 
   scene = new GenScene;
-  sCopyMem(scene->SRT,&s.x,9*4);
+  PackSRT(scene->SRT,s,r,t);
 
   return scene;
 }
@@ -456,16 +472,18 @@ GenScene * __stdcall Init_Scene_Camera(sF323 s,sF323 r,sF323 t)
 void __stdcall Exec_Scene_Camera(KOp *op,KEnvironment *kenv,sF323 s,sF323 r,sF323 t)
 {
   sMatrix mat;
+  sF32 srt[9];
+  PackSRT(srt,s,r,t);
   
 #if !sPLAYER
   if(!GenOverlayManager->LinkEdit)
   {
-    mat.InitSRT(&s.x);
+    mat.InitSRT(srt);
     kenv->GameCam.CameraSpace.MulA(mat,kenv->ExecStack.Top());
   }
 #else
   {
-    mat.InitSRT(&s.x);
+    mat.InitSRT(srt);
     kenv->GameCam.CameraSpace.MulA(mat,kenv->ExecStack.Top());
   }
 #endif
@@ -628,6 +646,7 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
   sF32 scanup,sF32 scandown,
   KSpline *stepspline)
 {
+  const sF323 *footParam[8] = { &l0,&l1,&l2,&l3,&l4,&l5,&l6,&l7 };   // the parameters are not adjacent in memory on every platform
   sMatrix mat;//,save;               // local vars
   sMatrix dir;                    // desired orientation of walker
   sVector savevar[8],savetime;
@@ -680,7 +699,7 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
     mem->InitSteps = FootCount*2;
     for(i=0;i<FootCount;i++)
     {
-      mem->FootDelta[i].Init((&l0)[i].x,(&l0)[i].y,(&l0)[i].z,0);
+      mem->FootDelta[i].Init(footParam[i]->x,footParam[i]->y,footParam[i]->z,0);
       v.Add3(matrix.l,mem->FootDelta[i]);
       v.w = 0;
       mem->FootOld[i] = mem->FootNew[i] = v;

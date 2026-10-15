@@ -5,7 +5,9 @@
 #include "genbitmap.hpp"
 #include "genmaterial.hpp"
 #include "genmesh.hpp"
+#if sLINK_MINMESH
 #include "genminmesh.hpp"
+#endif
 #include "genoverlay.hpp"
 #include "genscene.hpp"
 #include "geneffect.hpp"
@@ -20,22 +22,7 @@ KOp *KOpCurrent = 0;
 #define sOP_PERFORMANCE 0
 
 #if sUSE_TIME_OF_YEAR
-struct SYSTEMTIME
-{
-  sU16 wYear;
-  sU16 wMonth;
-  sU16 wDayOfWeek;
-  sU16 wDay;
-  sU16 wHour;
-  sU16 wMinute;
-  sU16 wSecond;
-  sU16 wMilliseconds;
-};
-
-typedef sU64 FILETIME;
-
-extern "C" void __stdcall GetSystemTime(SYSTEMTIME *lpSystemTime);
-extern "C" sBool __stdcall SystemTimeToFileTime(const SYSTEMTIME *lpSystemTime,FILETIME *lpFileTime);
+extern "C" __attribute__((import_module("env"),import_name("js_time_of_year"))) float js_time_of_year();
 #endif
 
 #if sOP_PERFORMANCE
@@ -239,36 +226,9 @@ sInt KOp::Calc(KEnvironment *env,sInt flags)
 
 /****************************************************************************/
 
-#pragma warning(disable : 4731)   // EPB CHANGED WARNING
-
-static sInt CallCode(sInt code,sInt *para,sInt count)
-{
-  sInt result;
-  __asm
-  {
-    mov eax,code
-    mov esi,para
-    mov ecx,count
-    push ebp
-    mov ebp,esp
-    sub esp,ecx
-    sub esp,ecx
-    sub esp,ecx
-    sub esp,ecx
-    mov edi,esp
-    rep movsd
-
-    call eax
-
-    mov esp,ebp
-    pop ebp
-    mov result,eax
-  }
-
-  return result; 
-}
-
-#pragma warning(default : 4731)
+// Handlers are called through generated wrappers (web/thunks.inc): WebAssembly
+// checks signatures on indirect calls, so the original CallCode, which pushed the
+// argument words onto the x86 stack, cannot be used.
 
 /****************************************************************************/
 
@@ -404,14 +364,14 @@ KObject *KOp::Call(KEnvironment *kenv)
     if(Convention&OPC_ALTINIT)
       p = pNoPara;
 
-    result = (KObject *)CallCode((sInt)InitHandler,(sInt *)data,p);
+    result = InitThunk(data);
   }
 #else
   {
     if(Convention&OPC_ALTINIT)
       p = pNoPara;
 
-    result = (KObject *)CallCode((sInt)InitHandler,(sInt *)data,p);
+    result = InitThunk(data);
   }
 #endif
 
@@ -525,7 +485,9 @@ void KOp::Exec(KEnvironment *kenv)
 
   if(Convention&OPC_ALTEXEC)
   {
-    ((void (__stdcall *)(KOp *,KEnvironment *))ExecHandler)(this,kenv);
+    data[0] = (sU32) this;
+    data[1] = (sU32) kenv;
+    ExecThunk(data);
   }
   else
   {
@@ -550,7 +512,7 @@ void KOp::Exec(KEnvironment *kenv)
     if(Convention&OPC_OUTPUTCOUNT)        // outputcount
       data[p++] = OutputCount;
 
-    CallCode((sInt)ExecHandler,(sInt *)data,p);   // call
+    ExecThunk(data);                      // call
   }
 
 // end animation
@@ -637,22 +599,7 @@ void KOp::ExecEvent(KEnvironment *kenv,KEvent *event,sBool)
 
   // time of year computation
 #if sUSE_TIME_OF_YEAR
-  SYSTEMTIME systemTime;
-  sU64 timeYear,startYear,endYear;
-
-  GetSystemTime(&systemTime);
-  SystemTimeToFileTime(&systemTime,(FILETIME *) &timeYear);
-
-  systemTime.wMonth = 1;
-  systemTime.wDay = 1;
-  systemTime.wHour = systemTime.wMinute = systemTime.wSecond = 0;
-  systemTime.wMilliseconds = 0;
-  SystemTimeToFileTime(&systemTime,(FILETIME *) &startYear);
-
-  systemTime.wYear++;
-  SystemTimeToFileTime(&systemTime,(FILETIME *) &endYear);
-
-  kenv->Var[3].w = 1.0 * (timeYear - startYear) / (endYear - startYear);
+  kenv->Var[3].w = js_time_of_year();       // fraction of the current year (the original used the Windows clock)
 #endif
 
   if(event->Spline)                         // set spline
@@ -1532,8 +1479,13 @@ void KEvent::Stop()
 /****************************************************************************/
 
 static KClass KClasses[256];
+#if sCONFIG_WEB
+#include "web/kkload.hpp"
+static const PortThunk *ClassThunks[256];
+sBool KDocByteClassIds;
+#endif
 
-static sBool DistributeAnimR(KOp *start)
+sBool DistributeAnimR(KOp *start)
 {
   sInt i;
 
@@ -1592,16 +1544,33 @@ void KDoc::Init(const sU8 *&dataPtr)
   {
     data += 4;
     cls->Convention = conv;
-    i = *((sU16 *)data); data+=2;
+#if sCONFIG_WEB
+    if(KDocByteClassIds)                // earlier exports (such as kkrieger3383.kx) store one byte
+      i = *data++;
+    else
+#endif
+    {
+      i = *((sU16 *)data); data+=2;
+    }
     cls->Packing = (sChar *) data;
     while(*data++);
 
+#if sCONFIG_WEB
+    // the browser build calls operators through thunks (web/thunks.inc)
+    const PortThunk *thunk = PortFindThunk(i);
+    if(!thunk)
+      sFatal("Unknown operator class %02x in class list.",i);
+    ClassThunks[nClasses] = thunk;
+    KHandler handlerData = { i,thunk->InitFn,thunk->ExecFn };
+    KHandler *handler = &handlerData;
+#else
     KHandler *handler = KHandlers;
     while(handler->Id && handler->Id != i)
       handler++;
 
     if(!handler->Id)
       sFatal("Unknown operator class %02x in class list.",i);
+#endif
 
 #if sOP_PERFORMANCE
     sChar buffer[64];
@@ -1625,11 +1594,23 @@ void KDoc::Init(const sU8 *&dataPtr)
 
     op = &Ops[i];
     sSetMem(op,0,sizeof(KOp));
+#if sCONFIG_WEB
+    // storage and calls follow the port's (final) layout of the class; the
+    // data is still parsed by the exported layout, so parameters the export
+    // lacks at the end stay zero
+    op->Init(ClassThunks[typeByte & 0x7f]->Convention);
+    op->Convention = ClassThunks[typeByte & 0x7f]->Convention;
+#else
     op->Init(cls->Convention);
-    op->Command = typeByte & 0x7f;
     op->Convention = cls->Convention;
+#endif
+    op->Command = typeByte & 0x7f;
     op->InitHandler = cls->InitHandler;
     op->ExecHandler = cls->ExecHandler;
+#if sCONFIG_WEB
+    op->InitThunk = ClassThunks[typeByte & 0x7f]->Init;
+    op->ExecThunk = ClassThunks[typeByte & 0x7f]->Exec;
+#endif
     op->WheelSpeed = (sInt) cls->Packing; // abuse, yes.
     op->OpId = i;
     op->AnimFlag = sTRUE; // first, assume that ops are all animated

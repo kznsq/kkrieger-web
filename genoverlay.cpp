@@ -28,8 +28,10 @@ extern "C" void __stdcall wsprintfA(sChar *str,const sChar *format,...);
 
 /****************************************************************************/
 
+#if sLINK_MTRL20
 #include "effect_jpegps.hpp"
 #include "effect_jpegvs.hpp"
+#endif
 
 static const sU32 EffectJPEGStates[] = {
   sD3DRS_ALPHATESTENABLE,               0,
@@ -893,11 +895,11 @@ GenIPP * __stdcall Init_IPP_Layer2D(GenIPP *in,GenMaterial *mtrl,sInt size,sF324
   return new GenIPP;
 }
 
-GenIPP * __stdcall Init_IPP_Select(sInt count,GenIPP *in,...)
+GenIPP * __stdcall Init_IPP_Select(sInt count,GenIPP **inl)
 {
   GenIPP **inp;
   sInt i;
-  inp = &in;
+  inp = inl;
   for(i=0;i<count;i++)
     inp[i]->Release();
   return new GenIPP;
@@ -942,12 +944,25 @@ void __stdcall Exec_IPP_Viewport(KOp *parent,KEnvironment *kenv,sInt size,sInt f
 #endif
 
   op = parent->GetInput(0);
+
   if(op)
   {
     rt = GenOverlayManager->Find(parent);
     if(!rt)
     {
       Engine->StartFrame();
+
+      // Data from the 2004 release (flag 0x8000): camera operators inside the
+      // scene set the game camera while the scene executes, so the scene runs
+      // first and the viewport then renders with the game camera.
+      sBool sceneCamera = (flags & 0x8000)!=0;
+      if(sceneCamera)
+      {
+        kenv->CurrentCam = kenv->GameCam;
+        Engine->SetViewProject(kenv->CurrentCam);
+        op->Exec(kenv);
+        flags |= 4;
+      }
 
       // CurrentCam is the way to tell camera details
 
@@ -1064,7 +1079,8 @@ void __stdcall Exec_IPP_Viewport(KOp *parent,KEnvironment *kenv,sInt size,sInt f
       // set viewport for culling etc.
       Engine->SetViewProject(kenv->CurrentCam);
 
-      op->Exec(kenv);
+      if(!sceneCamera)
+        op->Exec(kenv);
 #ifdef _DOPE
       if(!GenOverlayManager->EnableIPP && GenOverlayManager->ForceResolution == 3)
         rt = GenOverlayManager->Alloc(parent,GENOVER_RTSIZES,ocount);
@@ -1073,6 +1089,7 @@ void __stdcall Exec_IPP_Viewport(KOp *parent,KEnvironment *kenv,sInt size,sInt f
       sViewport oldVp;
 
       rt = GenOverlayManager->Alloc(parent,size,ocount);
+
       GenOverlayManager->PrepareViewport(rt,view);
       sRect r;
       r.x0 = view.Window.x0 + view.Window.XSize() * fx0;

@@ -2748,7 +2748,7 @@ void Engine_::AddSectorJob(GenScene *sector,KOp *sectorData,const sMatrix &matri
 
 void Engine_::ProcessPortals(KEnvironment *kenv,KKriegerCell *observerCell)
 {
-#if !sINTRO // no portal culling in intros
+#if !sINTRO || sCONFIG_WEB // no portal culling in intros; the 2004 level paints its sectors (and their lights) only through this
   sFRect unitBox;
   unitBox.Init(-1,-1,1,1);
 
@@ -2809,11 +2809,25 @@ void Engine_::ProcessPortals(KEnvironment *kenv,KKriegerCell *observerCell)
 
 /****************************************************************************/
 
+// lights of every Paint call this frame, for the browser's diagnostics
+// (kk_light_info in web_main.cpp): x,y,z, amplify, range, paint index
+sF32 EngDebugLights[64*6];
+sInt EngDebugLightCount;
+sInt EngDebugPaintCount;
+
 void Engine_::Paint(KEnvironment *kenv,sBool specular)
 {
   // Insert weapon light into list of light jobs, if necessary.
   if(WeaponLightSet)
     InsertLightJob(WeaponLight,LightJobs[0].Importance + 1.0f,1.0f);
+
+  for(sInt i=0;i<LightJobCount && EngDebugLightCount<64;i++)
+  {
+    sF32 *d = EngDebugLights+(EngDebugLightCount++)*6;
+    d[0] = LightJobs[i].Position.x; d[1] = LightJobs[i].Position.y; d[2] = LightJobs[i].Position.z;
+    d[3] = LightJobs[i].Amplify; d[4] = LightJobs[i].Range; d[5] = EngDebugPaintCount;
+  }
+  EngDebugPaintCount++;
 
 #if sPROFILE
   // Official beginning of gpu frame ;)
@@ -3058,8 +3072,9 @@ void Engine_::InsertLightJob(const EngLight &light,sF32 importance,sF32 fade)
     LightJobs[i].ZFailCull.ZFailVolume(light.Position,Env.CameraSpace,
       Env.NearClip,&Env.ZoomX,rect);
 
-    // done
-    LightJobCount++;
+    // done (when the list was full, the least important light dropped out)
+    if(LightJobCount < MAXLIGHT)
+      LightJobCount++;
   }
 }
 
@@ -3180,8 +3195,14 @@ void Engine_::BuildPaintJobs()
     if(effect->NeedCurrentRender)
       NeedCurrentRender[passIndex] = sTRUE;
     
+    // like single-pass mesh jobs, effects that are not part of the lighting
+    // go after all lights; with light slot 0 they landed between the light
+    // passes, before the specular pass that adds destination alpha, and their
+    // alpha turned particles into solid white squares
+    sInt lightId = (effect->Usage < ENGU_SHADOW) ? 0 : MAXLIGHT-1;
+
     PaintJob *pjob = Mem.Alloc<PaintJob>();
-    pjob->SortKey = (passIndex << 24) | (effect->Usage << 16);
+    pjob->SortKey = (passIndex << 24) | (lightId << 20) | (effect->Usage << 16);
     pjob->JobId = -1;
     pjob->Light = 0;
     pjob->EffJob = job;

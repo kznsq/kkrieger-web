@@ -49,7 +49,7 @@ public:
 /****************************************************************************/
 
 GenScene * __stdcall Init_Scene_Scene(GenMesh *mesh,sF323 s,sF323 r,sF323 t,sBool lightmap);
-GenScene * __stdcall Init_Scene_Add(sInt count,GenScene *s0,...);
+GenScene * __stdcall Init_Scene_Add(sInt count,GenScene **sl);
 GenScene * __stdcall Init_Scene_Multiply(GenScene *scene,sF323 s,sF323 r,sF323 t,sInt count);
 GenScene * __stdcall Init_Scene_Transform(GenScene *scene,sF323 s,sF323 r,sF323 t);
 GenScene * __stdcall Init_Scene_Particles(GenScene *scene,sInt mode,sInt count,sInt seed,sF323 rand,sF323 rot,sF323 rotspeed,sF32 anim,sF323 line,KSpline *spline);

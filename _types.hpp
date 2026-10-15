@@ -79,7 +79,7 @@
 /****************************************************************************/
 
 //#if _DEBUG                          // fix memory management
-#if !sINTRO && sPLATFORM!=sPLAT_PDA
+#if 0
 #define _MFC_OVERRIDES_NEW
 void *  __cdecl operator new(unsigned int);
 void *  __cdecl operator new(unsigned int,const char *,int);
@@ -88,7 +88,7 @@ inline void __cdecl operator delete(void *p, const char *, int s) { ::operator d
 #endif
 //#endif
 
-#define sNORETURN __declspec(noreturn)  // use this for dead end funtions
+#define sNORETURN __attribute__((noreturn))  // use this for dead end funtions
 
 /****************************************************************************/
 /***                                                                      ***/
@@ -210,17 +210,17 @@ class sBitmap;
 typedef unsigned char             sU8;      // for packed arrays
 typedef unsigned short            sU16;     // for packed arrays
 typedef unsigned int              sU32;     // for packed arrays and bitfields
-typedef unsigned __int64          sU64;     // use as needed
+typedef unsigned long long        sU64;     // use as needed
 typedef signed char               sS8;      // for packed arrays
 typedef short                     sS16;     // for packed arrays
 typedef int                       sS32;     // for packed arrays
-typedef signed __int64            sS64;     // use as needed
+typedef signed long long          sS64;     // use as needed
 #if !sMOBILE
 typedef float                     sF32;     // basic floatingpoint
 typedef double                    sF64;     // use as needed
 #endif
 typedef int                       sInt;     // use this most!
-typedef int __w64                 sDInt;    // type for pointer diff
+typedef long                      sDInt;    // type for pointer diff
 #if sUNICODE
 typedef unsigned short            sChar;    // type for strings
 #else
@@ -265,7 +265,7 @@ template <class Type> __forceinline Type sMax(Type a,Type b)            {return 
 template <class Type> __forceinline Type sSign(Type a)                  {return (a==0) ? 0 : (a>0) ? 1 : -1;}
 template <class Type> __forceinline Type sRange(Type a,Type max,Type min) {return (a>=max) ? max : (a<=min) ? min : a;}
 template <class Type> __forceinline void sSwap(Type &a,Type &b)         {Type s; s=a; a=b; b=s;}
-template <class Type> __forceinline Type sAlign(Type a,sInt b)          {return (Type)((((sInt)a)+b-1)&(~(b-1)));}
+template <class Type> __forceinline Type sAlign(Type a,sInt b)          {return (Type)((((sDInt)a)+b-1)&(~(sDInt)(b-1)));}
 
 template <class Type> __forceinline Type sSquare(Type a)                {return a*a;}
 
@@ -296,19 +296,10 @@ __forceinline sF32 sFade(sF32 a,sF32 b,sF32 fade)												{return a+(b-a)*fad
 
 // integer
 
-typedef unsigned int size_t;
-
-extern "C"
-{
-  int __cdecl abs(int);
-  void * __cdecl memset( void *dest, int c, size_t count );
-  void * __cdecl memcpy( void *dest, const void *src, size_t count );
-  int __cdecl memcmp( const void *buf1, const void *buf2, size_t count );
-  size_t __cdecl strlen( const char *string );
-}
-
-#pragma intrinsic (abs)                                       // int intrinsic
-#pragma intrinsic (memset,memcpy,memcmp,strlen)               // memory intrinsic
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <stdarg.h>
 
 __forceinline sInt sAbs(sInt i)                                 { return abs(i); }
 __forceinline void sSetMem(sPtr dd,sInt s,sInt c)               { memset(dd,s,c); }
@@ -326,32 +317,6 @@ __forceinline sInt sGetStringLen(const sChar *s)                { for(sInt i=0;s
 
 #if !sMOBILE
 
-extern "C"
-{
-
-  double __cdecl atan(double);
-  double __cdecl atan2(double,double);
-  double __cdecl cos(double);
-  double __cdecl exp(double);
-  double __cdecl fabs(double);
-  double __cdecl log(double);
-  double __cdecl log10(double);
-  double __cdecl sin(double);
-  double __cdecl sqrt(double);
-  double __cdecl tan(double); 
-
-  double __cdecl acos(double);
-  double __cdecl asin(double);
-  double __cdecl cosh(double);
-  double __cdecl fmod(double,double);
-  double __cdecl pow(double,double);
-  double __cdecl sinh(double);
-  double __cdecl tanh(double);
-}
-
-#pragma intrinsic (atan,atan2,cos,exp,log,log10,sin,sqrt,tan,fabs) // true intrinsic
-#pragma intrinsic (acos,asin,cosh,fmod,pow,sinh,tanh)         // fake intrinsic
-
 __forceinline sF64 sFATan(sF64 f)         { return atan(f); }
 __forceinline sF64 sFATan2(sF64 a,sF64 b) { return atan2(a,b); }
 __forceinline sF64 sFCos(sF64 f)          { return cos(f); }
@@ -368,14 +333,14 @@ __forceinline sF64 sFTanH(sF64 f)         { return tanh(f); }
 
 __forceinline sF64 sFInvSqrt(sF64 f)      { return 1.0/sqrt(f); }
 
-#if !sINTRO 
+#if 1
 __forceinline sF64 sFACos(sF64 f)         { return acos(f); }
 __forceinline sF64 sFMod(sF64 a,sF64 b)   { return fmod(a,b); }
 __forceinline sF64 sFExp(sF64 f)          { return exp(f); }
 __forceinline sF64 sFPow(sF64 a,sF64 b)   { return pow(a,b); }
 #endif
 
-#if sINTRO
+#if 0
 sF64 sFACos(sF64 f);
 sF64 sFPow(sF64 a,sF64 b);
 sF64 sFMod(sF64 a,sF64 b);
@@ -400,135 +365,20 @@ sInt sQuadraticRoots(const sF32 *coeffs,sF32 *roots);
 
 #pragma warning (disable : 4035) 
 
-__forceinline void sFloatFix()
-{
-  __asm
-	{
-    fclex;
-		push		0103fh; // round to nearest even + single precision
-		fldcw		[esp];
-		pop			eax;
-	}
-}
+__forceinline void sFloatFix() {}
+__forceinline void sFloatDouble() {}
+__forceinline void sFloatDen1() {}
+__forceinline void sFloatDen0() {}
 
-__forceinline void sFloatDouble()
-{
-  __asm
-  {
-    fclex;
-    push    0123fh; // round to nearest even + double precision
-    fldcw   [esp];
-    pop     eax;
-  }
-}
-
-__forceinline void sFloatDen1()
-{
-  __asm
-	{
-    fclex;
-		push		0141fh;
-		fldcw		[esp];
-		pop			eax;
-	}
-}
-__forceinline void sFloatDen0()
-{
-  __asm
-	{
-    fclex;
-		push		0143fh;
-		fldcw		[esp];
-		pop			eax;
-	}
-}
-
-__forceinline sInt sFtol (const float f)
-{
-  __asm 
-  {
-    fld f
-    push eax
-    fistp dword ptr [esp]
-    pop eax
-  }
-}
-
-__forceinline sF32 sFRound (const float f)
-{
-  __asm 
-  {
-    fld f
-    frndint
-  }
-}
-
-__forceinline void sFSinCos(const float x,sF32 &sine,sF32 &cosine)
-{
-  __asm
-  {
-    fld x;
-    fsincos;
-    mov eax,[cosine];
-    fstp dword ptr [eax];
-    mov eax,[sine];
-    fstp dword ptr [eax];
-  }
-}
-
-__forceinline sInt sMulDiv(sInt var_a,sInt var_b,sInt var_c)
-{
-  __asm
-  {
-    mov eax,var_a
-    imul var_b
-    idiv var_c
-  }
-}
-
-__forceinline sInt sMulShift(sInt var_a,sInt var_b)
-{
-  __asm
-  {
-    mov eax, var_a
-    imul var_b
-    shrd eax, edx, 16
-  }
-}
-
-__forceinline sInt sMulShift30(sInt var_a,sInt var_b)
-{
-  __asm
-  {
-    mov eax, var_a
-    imul var_b
-    shrd eax, edx, 30
-  }
-}
-
-__forceinline sInt sDivShift(sInt var_a,sInt var_b)
-{
-  __asm
-  {
-    mov eax,var_a
-    mov edx,eax
-    shl eax,16
-    sar edx,16
-    idiv var_b
-  }
-}
-
-__forceinline sInt sDivShift30(sInt var_a,sInt var_b)
-{
-  __asm
-  {
-    mov eax,var_a
-    mov edx,eax
-    shl eax,30
-    sar edx,2
-    idiv var_b
-  }
-}
+// fistp with the FPU in round-to-nearest-even mode
+__forceinline sInt sFtol (const float f)    { return (sInt)lrintf(f); }
+__forceinline sF32 sFRound (const float f)  { return rintf(f); }
+__forceinline void sFSinCos(const float x,sF32 &sine,sF32 &cosine) { sine=(sF32)sin(x); cosine=(sF32)cos(x); }
+__forceinline sInt sMulDiv(sInt var_a,sInt var_b,sInt var_c)  { return (sInt)(((sS64)var_a*var_b)/var_c); }
+__forceinline sInt sMulShift(sInt var_a,sInt var_b)          { return (sInt)(((sS64)var_a*var_b)>>16); }
+__forceinline sInt sMulShift30(sInt var_a,sInt var_b)        { return (sInt)(((sS64)var_a*var_b)>>30); }
+__forceinline sInt sDivShift(sInt var_a,sInt var_b)          { return (sInt)((((sS64)var_a)<<16)/var_b); }
+__forceinline sInt sDivShift30(sInt var_a,sInt var_b)        { return (sInt)((((sS64)var_a)<<30)/var_b); }
 
 sBool sNormalFloat(sF32 value);
 
@@ -614,7 +464,7 @@ sBool sScanCycle(const sChar *cycle,sInt index,sInt &start,sInt &len);
 
 void sCopyString(sChar *d,const sChar *s,sInt size);
 sInt sCmpString(const sChar *a,const sChar *b);
-sBool sFormatString(sChar *buffer,sInt size,const sChar *format,const sChar **fp); // return sFALSE if text is truncated!
+sBool sFormatString(sChar *buffer,sInt size,const sChar *format,va_list *fp); // return sFALSE if text is truncated!
 
 /****************************************************************************/
 /***                                                                      ***/
@@ -762,8 +612,8 @@ sNORETURN void __cdecl sFatal(char *format,...);
 #define sVERIFY(x) {if(!(x))sVerifyFalse(sTXT(__FILE__),__LINE__);}
 #define sVERIFYFALSE {sVerifyFalse(sTXT(__FILE__),__LINE__);}
 #else
-#define sVERIFY(x) {if(!(x)){__asm { int 3 };sVerifyFalse(sTXT(__FILE__),__LINE__);}}
-#define sVERIFYFALSE {__asm{ int 3 };sVerifyFalse(sTXT(__FILE__),__LINE__);}
+#define sVERIFY(x) {if(!(x)){sVerifyFalse(sTXT(__FILE__),__LINE__);}}
+#define sVERIFYFALSE {sVerifyFalse(sTXT(__FILE__),__LINE__);}
 #endif
 #else
 #define sVERIFY(x) {;}
@@ -1688,7 +1538,7 @@ template <class Type> class sAutoPtr        // automatically delete ptr when goi
 public:
   sAutoPtr()                                { Ptr = 0; }
   sAutoPtr(Type *x) : Ptr(x)                {}
-  ~sAutoPtr()                               { delete Ptr }
+  ~sAutoPtr()                               { delete Ptr; }
   sAutoPtr(const sAutoPtr &x) : Ptr(x)      { x=0; }
   sAutoPtr & operator= (const sAutoPtr &x)  { delete Ptr; Ptr=x; x=0; }
 
@@ -1698,17 +1548,17 @@ public:
 template <class Type> class sArray2 : public sArray<Type> // add support for sFORALL() and constructor/destructor to sArray 
 {
 public:
-  sArray2()                                 { Init(); }
-  ~sArray2()                                { Exit(); }
-  sArray2(const sArray2 &x)                 { Init(); Copy(x); }
-  sArray2 & operator= (const sArray2 &x)    { Copy(x); }
+  sArray2()                                 { this->Init(); }
+  ~sArray2()                                { this->Exit(); }
+  sArray2(const sArray2 &x)                 { this->Init(); this->Copy(x); }
+  sArray2 & operator= (const sArray2 &x)    { this->Copy(x); return *this; }
   Type *Add()                               { return sArray<Type>::Add(); }
   void Add(const Type &x)                   { *sArray<Type>::Add()=x; }
-  sInt GetCount() const                     { return Count; }
-  Type *GetFOR(sInt i)                      { return &Array[i]; }
-  const Type *GetFOR(sInt i) const          { return &Array[i]; }
-  void Swap(sInt i,sInt j)                  { sSwap(Array[i],Array[j]); }
-  void Clear()                              { Count = 0; }
+  sInt GetCount() const                     { return this->Count; }
+  Type *GetFOR(sInt i)                      { return &this->Array[i]; }
+  const Type *GetFOR(sInt i) const          { return &this->Array[i]; }
+  void Swap(sInt i,sInt j)                  { sSwap(this->Array[i],this->Array[j]); }
+  void Clear()                              { this->Count = 0; }
 };
 
 template <class Type> class sAutoArray       // Array of pointers, deleted when array gets deleted
@@ -1834,7 +1684,7 @@ public:
   void FixUsed();
   void Print(const sChar *);                 // these require correct Used-counter!
   void PrintF(const sChar *format,...);
-  void PrintArg(const sChar *format,const sChar **fp);
+  void PrintArg(const sChar *format,va_list *fp);
 };
 
 #endif
@@ -1944,7 +1794,7 @@ class sTickTimer
   sU64 Total;
   sU64 LastStart;
 
-  static sU64 Tick()                  { __asm { rdtsc } }
+  static sU64 Tick()                  { return 0; }
 
 public:
   sTickTimer()                        { Reset(); }

@@ -401,7 +401,7 @@ GenMaterial * __stdcall Init_Material_Material(KOp *op)
       texbitmap[i]->Release();
 
   if(op->GetInput(0) && op->GetInput(0)->Cache && op->GetInput(0)->Cache->ClassId==KC_MATERIAL)
-    return Material_Add(2,(GenMaterial *)op->GetInput(0)->Cache,gm);
+    { GenMaterial *ml[2] = { (GenMaterial *)op->GetInput(0)->Cache,gm }; return Material_Add(2,ml); }
   else
     return gm;
 }
@@ -485,13 +485,13 @@ GenMesh * __stdcall Mesh_MatLink(GenMesh *mesh,GenMaterial *mtrl,sInt mask,sInt 
   return mesh;
 }
 
-GenMaterial * __stdcall Material_Add(sInt count,GenMaterial *m0,...)
+GenMaterial * __stdcall Material_Add(sInt count,GenMaterial **ml)
 {
   sInt i,j;
   GenMaterial **mp,*mtrl,*madd;
   GenMaterialPass *pc;
 
-  mp = &m0;
+  mp = ml;
   mtrl = new GenMaterial;
 
   for(i=0;i<count;i++)

@@ -7,7 +7,10 @@
 #include "genscene.hpp"
 #include "engine.hpp"
 #include "_util.hpp"
+#if sLINK_MINMESH
 #include "genminmesh.hpp"
+#endif
+#include <stdarg.h>
 
 #define SCRIPTVERIFY(x) {if(!(x)) return 0;}
 
@@ -1008,9 +1011,13 @@ sInt GenMesh::AddEdge(sInt v0,sInt v1,sInt face)
 void GenMesh::MakeFace(sInt face,sInt nedges,...)
 {
 	sInt i,t,e;
-	sInt *edges;
+	sInt edges[64];
+	va_list ap;
 
-	edges = &nedges + 1;
+	va_start(ap,nedges);
+	for(i=0;i<nedges;i++)
+		edges[i] = va_arg(ap,sInt);
+	va_end(ap);
 	Face[face].Init();
 	Face[face].Edge = edges[0];
 	t = edges[nedges-1];
@@ -2720,13 +2727,6 @@ void GenMesh::Perlin(const sMatrix &mat,const sVector &amp)
   sInt oldcw;
 
   // setup fpu: single precision, round towards neg. infinity
-  __asm
-  {
-    fstcw   [oldcw];
-    push    0143fh;
-    fldcw   [esp];
-    pop     eax;
-  }
 
 	for(sInt i=0;i<Vert.Count;i++)
 	{
@@ -2741,7 +2741,7 @@ void GenMesh::Perlin(const sMatrix &mat,const sVector &amp)
       t0.Rotate34(mat,*vert);
       for(sInt j=0;j<3;j++)
       {
-        is[j] = sFtol(t0[j]);   // integer coordinate
+        is[j] = (sInt)floorf(t0[j]);   // the original ran this loop with the FPU rounding towards -inf   // integer coordinate
         fs[j] = t0[j] - is[j];  // fractional part
         is[j] &= 255;           // integer grid wraps round 256
         fs[j] = fs[j]*fs[j]*fs[j]*(10.0f+fs[j]*(6.0f*fs[j]-15.0f));
@@ -2773,10 +2773,6 @@ void GenMesh::Perlin(const sMatrix &mat,const sVector &amp)
 	}
 
   // restore fpu state
-  __asm
-  {
-    fldcw   [oldcw];
-  }
 }
 
 /****************************************************************************/
@@ -3079,6 +3075,7 @@ sBool CheckMesh(GenMesh *&mesh,sU32 mask)
 
 GenMesh * __stdcall Mesh_Cube(sInt tx,sInt ty,sInt tz,sInt flags,sFSRT srt)
 {
+  const sInt tess[3] = { tx,ty,tz };     // the parameters are not adjacent in memory on every platform
 	sInt i,j;
   sInt bm;
   sMatrix mat;
@@ -3118,7 +3115,7 @@ GenMesh * __stdcall Mesh_Cube(sInt tx,sInt ty,sInt tz,sInt flags,sFSRT srt)
     mat.Init();
     (&mat.l.x)[j] = 1.0f;
 
-    for(i=1;i<(&tx)[j];i++)
+    for(i=1;i<tess[j];i++)
     {
       mesh->Extrude(0x00010000,0x00000100);
       mesh->Face2Vert();
@@ -3987,8 +3984,9 @@ GenMesh * __stdcall Mesh_Perlin(KOp *upd,GenMesh *mesh,sInt mask,sFSRT srt,sF323
 
 /****************************************************************************/
 
-GenMesh * __stdcall Mesh_Add(sInt count,GenMesh *mesh,...)
+GenMesh * __stdcall Mesh_Add(sInt count,GenMesh **ml)
 {
+  GenMesh *mesh = ml[0];
   sInt i;
   GenMesh *other;
 
@@ -3996,7 +3994,7 @@ GenMesh * __stdcall Mesh_Add(sInt count,GenMesh *mesh,...)
 
   for(i=1;i<count;i++)
   {
-    other = (&mesh)[i];
+    other = ml[i];
     if(other)
     {
       mesh->Add(other);
@@ -5141,6 +5139,7 @@ GenMesh * __stdcall Mesh_SingleVert()
 
 /****************************************************************************/
 
+#if sLINK_MINMESH
 static void ToMinVector(GenMinVector &dst,const sVector &src)
 {
   dst.x = src.x;
@@ -5272,6 +5271,8 @@ GenMinMesh * __stdcall Mesh_ToMin(GenMesh *mesh)
 
   return minMesh;
 }
+#endif
+
 #endif
 
 /****************************************************************************/

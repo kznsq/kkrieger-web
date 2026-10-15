@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>.kkrieger in the browser</title>
+<style>
+  :root { --bg: #0b0b0c; --fg: #d8d4cc; --dim: #8a857c; --accent: #c8a35a; --panel: #17161a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; padding: 16px; box-sizing: border-box; }
+  #stage { position: relative; width: min(100%, 1024px); aspect-ratio: 4 / 3; background: #000; }
+  canvas { width: 100%; height: 100%; display: block; image-rendering: auto; }
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; background: rgba(0,0,0,0.82); text-align: center; padding: 24px; box-sizing: border-box; }
+  #overlay.hidden { display: none; }
+  h1 { margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+  .dim { color: var(--dim); max-width: 34em; }
+  #drop { border: 1px dashed var(--dim); padding: 18px 26px; border-radius: 8px; cursor: pointer; }
+  #drop.over { border-color: var(--accent); color: var(--accent); }
+  #bar { width: 60%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; display: none; }
+  #bar > div { height: 100%; width: 0; background: var(--accent); }
+  #bar2 { width: min(100%, 1024px); display: flex; justify-content: flex-end; gap: 12px; margin-top: 8px; }
+  #bar2 button { background: var(--panel); color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 12px; font: inherit; cursor: pointer; }
+  #log { font: 12px ui-monospace, Menlo, monospace; color: var(--dim); max-width: 1024px; width: 100%; white-space: pre-wrap; margin-top: 10px; }
+  .err { color: #e06c5c; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="screen" width="800" height="600"></canvas>
+    <div id="overlay">
+      <h1>.kkrieger</h1>
+      <div class="dim">The 96&nbsp;KB first-person shooter by .theprodukkt (Breakpoint 2004), running from the original executable.</div>
+      <label id="drop">Drop <b>pno0001.exe</b> here, or click to choose it
+        <input id="file" type="file" accept=".exe" hidden></label>
+      <div class="dim" id="status"></div>
+      <div id="bar"><div></div></div>
+    </div>
+  </div>
+  <div id="bar2"><button id="soundbtn" type="button">Sound: on</button></div>
+  <div id="log"></div>
+</div>
+<script>
+'use strict';
+const canvas = document.getElementById('screen');
+const overlay = document.getElementById('overlay');
+const statusEl = document.getElementById('status');
+const bar = document.getElementById('bar');
+const logEl = document.getElementById('log');
+const drop = document.getElementById('drop');
+let worker = null;
+let ready = false;
+const params = new URLSearchParams(location.search);
+
+function log(text, cls) {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = (performance.now() / 1000).toFixed(1).padStart(6) + '  ' + text;
+  logEl.appendChild(d);
+}
+
+function start(exe, kx) {
+  if (worker) return;
+  drop.style.display = 'none';
+  statusEl.textContent = 'Unpacking the executable and generating textures, meshes and sound…';
+  bar.style.display = 'block';
+  const off = canvas.transferControlToOffscreen();
+  worker = new Worker('kkworker.js');
+  worker.onmessage = (ev) => {
+    const m = ev.data;
+    switch (m.type) {
+      case 'log': log(m.text); break;
+      case 'progress': bar.firstChild.style.width = (100 * m.done / Math.max(1, m.max)).toFixed(1) + '%'; break;
+      case 'ready':
+        ready = true;
+        statusEl.textContent = 'Click to play. Enter or a click skips the intro; arrow keys and Enter work the menus. In the game: W A S D to move, mouse to look, left button to shoot, space to jump, 1–5 weapons, Esc for the game menu (and to release the mouse).';
+        bar.style.display = 'none';
+        log('ready, peak heap ' + (m.heap / 1048576).toFixed(0) + ' MB');
+        break;
+      case 'error': log(m.text, 'err'); statusEl.textContent = 'Error: ' + m.text.split('\n')[0]; break;
+      case 'exit': log('game exited'); break;
+      case 'audio': if (audio.node) audio.node.port.postMessage(m.data, [m.data.buffer]); break;
+      case 'sample': addSample(m.handle, m.data, m.is3d); break;
+      case 'play': playSample(m.handle, m.voice, m.vol, m.pan); break;
+      case 'sound3d': for (const e of m.list) place3d(...e); break;
+      case 'listener': placeListener(m.v); break;
+    }
+  };
+  worker.onerror = (e) => log(String(e.message || e), 'err');
+  const payload = kx ? { kx: exe } : { exe };
+  worker.postMessage({ type: 'start', canvas: off, ...payload, debug: params.has('debug') }, [off, exe]);
+}
+
+async function loadFile(f) {
+  start(await f.arrayBuffer());
+}
+
+document.getElementById('file').addEventListener('change', (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
+
+function startKx() {
+  fetch('kkrieger3383.kx').then((r) => r.ok ? r.arrayBuffer() : Promise.reject(r.status))
+    .then((b) => start(b, true)).catch((e) => log('could not fetch kkrieger3383.kx: ' + e, 'err'));
+}
+
+// optional: ?exe=url to fetch the executable (local testing); ?kx loads the
+// development build exported with the published source (experimental: its
+// game view does not render correctly yet)
+const exeUrl = new URLSearchParams(location.search).get('exe');
+if (exeUrl) fetch(exeUrl).then((r) => r.ok ? r.arrayBuffer() : Promise.reject(r.status)).then((b) => start(b)).catch((e) => log('could not fetch ' + exeUrl + ': ' + e, 'err'));
+else if (params.has('kx')) startKx();
+
+/* sound ------------------------------------------------------------------ */
+// The worker renders the music ahead of playback (V2 synthesizer, 44.1 kHz
+// stereo); an AudioWorklet plays the chunks in order and reports its position
+// back. Sound effects are AudioBuffers started by handle, with a few voices
+// per sample like the original's DirectSound buffers.
+
+const audio = { ctx: null, node: null, master: null, wanted: !params.has('mute'), samples: [], voices: [] };
+const soundBtn = document.getElementById('soundbtn');
+soundBtn.textContent = 'Sound: ' + (audio.wanted ? 'on' : 'off');
+
+const WORKLET = `class KKMusic extends AudioWorkletProcessor {
+  constructor() { super(); this.queue = []; this.offset = 0; this.played = 0; this.port.onmessage = (e) => this.queue.push(e.data); }
+  process(inputs, outputs) {
+    const l = outputs[0][0], r = outputs[0][1] || l, n = l.length;
+    let i = 0;
+    while (i < n) {
+      if (!this.queue.length) { l.fill(0, i); r.fill(0, i); break; }
+      const b = this.queue[0], k = Math.min((b.length >> 1) - this.offset, n - i);
+      for (let j = 0; j < k; j++) { l[i + j] = b[(this.offset + j) * 2]; r[i + j] = b[(this.offset + j) * 2 + 1]; }
+      i += k; this.offset += k;
+      if (this.offset * 2 >= b.length) { this.queue.shift(); this.offset = 0; }
+    }
+    this.played += n;
+    if ((this.played & 1023) < n) this.port.postMessage(this.played);
+    return true;
+  }
+}
+registerProcessor('kk-music', KKMusic);`;
+
+async function audioStart() {
+  if (audio.ctx || !worker) return;
+  const ctx = new AudioContext({ sampleRate: 44100, latencyHint: 'interactive' });
+  audio.ctx = ctx;
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' })));
+  audio.master = ctx.createGain();
+  audio.master.gain.value = audio.wanted ? 1 : 0;
+  audio.master.connect(ctx.destination);
+  audio.node = new AudioWorkletNode(ctx, 'kk-music', { outputChannelCount: [2] });
+  audio.node.connect(audio.master);
+  audio.node.port.onmessage = (e) => worker.postMessage({ type: 'soundpos', pos: e.data });
+  for (const s of audio.samples) if (s && !s.buffer) s.buffer = toBuffer(s.data);
+  worker.postMessage({ type: 'sound', on: true });
+}
+
+function toBuffer(data) {
+  const n = data.length >> 1, b = audio.ctx.createBuffer(2, n, 44100);
+  const l = b.getChannelData(0), r = b.getChannelData(1);
+  for (let i = 0; i < n; i++) { l[i] = data[i * 2] / 32768; r[i] = data[i * 2 + 1] / 32768; }
+  return b;
+}
+
+function addSample(h, data, is3d) {
+  audio.samples[h] = { data, is3d, buffer: audio.ctx ? toBuffer(data) : null };
+  audio.voices[h] = [];
+}
+
+function playSample(h, voice, vol, pan) {
+  const s = audio.samples[h];
+  if (!audio.ctx || !s || !s.buffer) return;
+  const slot = (voice - 1) & 3, old = audio.voices[h][slot];
+  if (old) try { old.src.stop(); } catch (e) { /* already ended */ }
+  const ctx = audio.ctx, src = ctx.createBufferSource(), gain = ctx.createGain();
+  src.buffer = s.buffer;
+  gain.gain.value = Math.max(0, Math.min(1, vol));
+  let out;
+  if (s.is3d) {
+    out = ctx.createPanner();
+    out.panningModel = 'equalpower';
+    out.distanceModel = 'inverse';
+  } else {
+    out = ctx.createStereoPanner();
+    out.pan.value = Math.max(-1, Math.min(1, pan / 100));
+  }
+  src.connect(gain); gain.connect(out); out.connect(audio.master);
+  src.start();
+  audio.voices[h][slot] = { src, panner: s.is3d ? out : null, voice };
+}
+
+// the engine is left-handed (Direct3D), Web Audio right-handed: z flips
+function place3d(h, voice, x, y, z, minDist, maxDist) {
+  const v = audio.voices[h] && audio.voices[h][(voice - 1) & 3];
+  if (!v || v.voice !== voice || !v.panner) return;
+  const p = v.panner;
+  p.positionX.value = x; p.positionY.value = y; p.positionZ.value = -z;
+  p.refDistance = Math.max(0.01, minDist); p.maxDistance = Math.max(p.refDistance, maxDist);
+}
+
+function placeListener(v) {
+  const l = audio.ctx && audio.ctx.listener;
+  if (!l || !l.positionX) return;
+  l.positionX.value = v[0]; l.positionY.value = v[1]; l.positionZ.value = -v[2];
+  l.forwardX.value = v[3]; l.forwardY.value = v[4]; l.forwardZ.value = -v[5];
+  l.upX.value = v[6]; l.upY.value = v[7]; l.upZ.value = -v[8];
+}
+
+soundBtn.addEventListener('click', () => {
+  audio.wanted = !audio.wanted;
+  soundBtn.textContent = 'Sound: ' + (audio.wanted ? 'on' : 'off');
+  if (audio.master) audio.master.gain.value = audio.wanted ? 1 : 0;
+  else if (ready) audioStart();
+});
+
+/* input ------------------------------------------------------------------ */
+
+const KEY = { ESCAPE: 27, ENTER: 10, SPACE: 32, BACKSPACE: 8, TAB: 9, UP: 0x10000, DOWN: 0x10001, LEFT: 0x10002, RIGHT: 0x10003,
+  SHIFTL: 0x10021, SHIFTR: 0x10022, CTRLL: 0x10024, CTRLR: 0x10025, ALT: 0x10026, MOUSEL: 0x10028, MOUSER: 0x10029, MOUSEM: 0x1002a,
+  F1: 0x10030 };
+const BREAK = 0x80000000;
+
+function keyCode(e) {
+  switch (e.code) {
+    case 'Escape': return KEY.ESCAPE;
+    case 'Enter': case 'NumpadEnter': return KEY.ENTER;
+    case 'Space': return KEY.SPACE;
+    case 'Backspace': return KEY.BACKSPACE;
+    case 'Tab': return KEY.TAB;
+    case 'ArrowUp': return KEY.UP;
+    case 'ArrowDown': return KEY.DOWN;
+    case 'ArrowLeft': return KEY.LEFT;
+    case 'ArrowRight': return KEY.RIGHT;
+    case 'ShiftLeft': return KEY.SHIFTL;
+    case 'ShiftRight': return KEY.SHIFTR;
+    case 'ControlLeft': return KEY.CTRLL;
+    case 'ControlRight': return KEY.CTRLR;
+    case 'AltLeft': case 'AltRight': return KEY.ALT;
+  }
+  if (/^F([1-9]|1[0-2])$/.test(e.key)) return KEY.F1 + parseInt(e.key.slice(1), 10) - 1;
+  if (e.code.startsWith('Key')) return e.code.charCodeAt(3) + 32;      // lower-case letter
+  if (e.code.startsWith('Digit')) return e.code.charCodeAt(5);
+  return 0;
+}
+
+const down = new Set();
+window.addEventListener('keydown', (e) => {
+  if (!ready) return;
+  const k = keyCode(e);
+  if (!k) return;
+  if (k !== KEY.ESCAPE || document.pointerLockElement) e.preventDefault();
+  if (down.has(k)) return;                                              // no auto-repeat
+  down.add(k);
+  worker.postMessage({ type: 'key', code: k });
+});
+window.addEventListener('keyup', (e) => {
+  if (!ready) return;
+  const k = keyCode(e);
+  if (!k) return;
+  down.delete(k);
+  worker.postMessage({ type: 'key', code: (k | BREAK) >>> 0 });
+});
+
+let buttons = 0;
+canvas.addEventListener('click', () => {
+  if (ready && !document.pointerLockElement) canvas.requestPointerLock();
+  if (ready) audioStart();
+});
+overlay.addEventListener('click', (e) => {
+  if (ready && e.target !== drop && !drop.contains(e.target)) { overlay.classList.add('hidden'); canvas.requestPointerLock(); audioStart(); }
+});
+document.addEventListener('pointerlockchange', () => {
+  if (!document.pointerLockElement && ready) {
+    for (const k of down) worker.postMessage({ type: 'key', code: (k | BREAK) >>> 0 });
+    down.clear();
+    // Esc releases the mouse before the page sees the key; pass it on so the
+    // game opens its in-game menu, as Esc does in the original
+    worker.postMessage({ type: 'key', code: KEY.ESCAPE });
+    worker.postMessage({ type: 'key', code: (KEY.ESCAPE | BREAK) >>> 0 });
+  }
+});
+document.addEventListener('mousemove', (e) => {
+  if (ready && document.pointerLockElement) worker.postMessage({ type: 'mouse', dx: e.movementX, dy: e.movementY, buttons });
+});
+const MB = [KEY.MOUSEL, KEY.MOUSEM, KEY.MOUSER];
+document.addEventListener('mousedown', (e) => {
+  if (!ready || !document.pointerLockElement) return;
+  buttons |= 1 << e.button;
+  worker.postMessage({ type: 'key', code: MB[e.button] || KEY.MOUSEL });
+  worker.postMessage({ type: 'mouse', dx: 0, dy: 0, buttons });
+});
+document.addEventListener('mouseup', (e) => {
+  if (!ready || !document.pointerLockElement) return;
+  buttons &= ~(1 << e.button);
+  worker.postMessage({ type: 'key', code: ((MB[e.button] || KEY.MOUSEL) | BREAK) >>> 0 });
+  worker.postMessage({ type: 'mouse', dx: 0, dy: 0, buttons });
+});
+</script>
+</body>
+</html>

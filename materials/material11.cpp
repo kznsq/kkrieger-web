@@ -3,6 +3,11 @@
 #include "_types.hpp"
 #include "_startdx.hpp"
 #include "material11.hpp"
+
+// Data from the 2004 release relies on sMCA_INVERTA for the alpha that lerp
+// combiners blend by (its HUD is merged over the game that way); later data
+// was made with the flag ignored there, as this code originally did.
+sBool Material11InvertAlpha;
 #include "shadercodegen.hpp"
 
 #include "materials/material11vs.hpp"
@@ -546,7 +551,7 @@ sBool sMaterial11::Compile()
   {
     flags = Combiner[i];
     codegenData[i+30] = pssrc13[i];
-    codegenData[i+43] = psalpha13[flags & 0x00f];
+    codegenData[i+43] = psalpha13[flags & 0x00f] | ((Material11InvertAlpha && (flags & sMCA_INVERTA)) ? XS_COMP : 0);
   }
 
   // compile vertex shader

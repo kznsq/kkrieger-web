@@ -3,8 +3,7 @@
 #include "genbitmap.hpp"
 #include "rtmanager.hpp"
 #include "_start.hpp"
-#include "mmintrin.h"
-#include "xmmintrin.h"
+#include "mmintrin_emu.hpp"
 
 #define SCRIPTVERIFY(x) {if(!(x)) return 0;}
 #define SCRIPTVERIFYVOID(x) {return 0; }
@@ -57,6 +56,8 @@ sInt GenBitmapTextureSizeOffset;         // 0 = normal, -1 = smaller, 1 = large
 #define BI_ADDSMOOTH  18
 
 #define BI_RANGE      19
+
+void __stdcall Bitmap_Inner(sU64 *d,sU64 *s,sInt count,sInt mode,sU64 *x=0);
 
 /****************************************************************************/
 /***                                                                      ***/
@@ -150,65 +151,6 @@ sU32 GetColor32(const sInt4 &colx)
   return col;
 }
 
-void Fade64(sU64 &r,sU64 &c0,sU64 &c1,sInt fade)
-{
-  static const sU64 xor0 = 0xffffffff00000000;
-  static const sU64 add0 = 0x0000800100000000;
-
-  __asm
-  {
-    mov       eax, [c0];
-    movq      mm2, [eax];
-    mov       eax, [c1];
-    movq      mm3, [eax];
-
-    movd      mm0, [fade];
-    punpckldq mm0, mm0;
-    psrad     mm0, 1;
-    pxor      mm0, [xor0];
-    paddd     mm0, [add0];
-    packssdw  mm0, mm0;
-    punpcklwd mm0, mm0;
-    movq      mm1, mm0;
-    punpcklwd mm0, mm0;
-    punpckhwd mm1, mm1;
-    
-    mov       eax, [r];
-    pmulhw    mm3, mm0;
-    pmulhw    mm2, mm1;
-    paddw     mm2, mm3;
-    psllw     mm2, 1;
-    movq      [eax], mm2;
-
-    emms;
-  }
-}
-
-void AddScale64(sU64 &r,sU64 &c0,sU64 &c1,sInt fade)
-{
-  __asm
-  {
-    mov       eax, [c0];
-    movq      mm2, [eax];
-    mov       eax, [c1];
-    movq      mm3, [eax];
-
-    movd      mm0, [fade];
-    psrad     mm0, 1;
-    packssdw  mm0, mm0;
-    punpcklwd mm0, mm0;
-    punpcklwd mm0, mm0;
-
-    mov       eax, [r];
-    pmulhw    mm3, mm0;
-    psllw     mm3, 1;
-    paddsw    mm2, mm3;
-    movq      [eax], mm2;
-
-    emms;
-  }
-}
-
 void BilinearSetup(BilinearContext *ctx,sU64 *src,sInt w,sInt h,sInt b)
 {
   ctx->Src = src;
@@ -219,116 +161,7 @@ void BilinearSetup(BilinearContext *ctx,sU64 *src,sInt w,sInt h,sInt b)
   ctx->YAm = (b&2) ? 0xffffffff : h-1;
 }
 
-void BilinearFilter(BilinearContext *ctx,sU64 *r,sInt u,sInt v)
-{
-  static const sU64 adjust = 0x8000800080008000;
-  
-  __asm
-  {
-    mov       esi, [ctx];
-    mov       edi, [esi]BilinearContext.Src;
-
-    movd      mm1, [v];
-
-    // calc s0
-    mov       eax, [v];
-    lea       ebx, [eax-0x80000000];
-    sar       eax, 16;
-    sar       ebx, 31;
-    mov       edx, eax;
-    mov       ecx, [esi]BilinearContext.XShift;
-
-    and       eax, [esi]BilinearContext.YAm;
-    and       ebx, [esi]BilinearContext.YSize1;
-    cmp       eax, [esi]BilinearContext.YSize1;
-    jbe       ok1;
-    mov       eax, ebx;
-
-ok1:
-    shl       eax, cl;
-    add       edi, eax;
-
-    movd      mm0, [u];
-
-    // calc s1
-    lea       eax, [edx+1];
-    lea       ebx, [edx+0x7fffffff];
-    and       eax, [esi]BilinearContext.YAm;
-    sar       ebx, 31;
-    and       ebx, [esi]BilinearContext.YSize1;
-    cmp       eax, [esi]BilinearContext.YSize1;
-    jbe       ok2;
-    mov       eax, ebx;
-
-ok2:
-    shl       eax, cl;
-    add       eax, [esi]BilinearContext.Src;
-    mov       ecx, eax;
-
-    // u+0
-    mov       eax, [u];
-    lea       ebx, [eax-0x80000000];
-    sar       eax, 13;
-    sar       ebx, 31;
-    mov       edx, eax;
-
-    and       eax, [esi]BilinearContext.XAm;
-    and       ebx, [esi]BilinearContext.XSize1;
-
-    cmp       eax, [esi]BilinearContext.XSize1;
-    jbe       ok3;
-    mov       eax, ebx;
-
-ok3:
-    movq      mm2, [edi+eax];
-    movq      mm4, [ecx+eax];
-
-    // u+1
-    lea       eax, [edx+8];
-    lea       ebx, [edx+0x7ffffff8];
-    and       eax, [esi]BilinearContext.XAm;
-    sar       ebx, 31;
-    and       ebx, [esi]BilinearContext.XSize1;
-    cmp       eax, [esi]BilinearContext.XSize1;
-    jbe       ok4;
-    mov       eax, ebx;
-
-ok4:
-    movq      mm3, [edi+eax];
-    movq      mm5, [ecx+eax];
-
-    // actual sample
-    movq      mm6, [adjust];
-    punpcklwd mm0, mm0;
-    punpcklwd mm1, mm1;
-    mov       eax, [r];
-    punpcklwd mm0, mm0;
-    punpcklwd mm1, mm1;
-    psrlw     mm0, 1;
-    psrlw     mm1, 1;
-
-    // horiz
-    psubw     mm3, mm2;
-    psubw     mm5, mm4;
-    pmulhw    mm3, mm0;
-    pmulhw    mm5, mm0;
-    psllw     mm3, 1;
-    psllw     mm5, 1;
-    paddw     mm2, mm3;
-    paddw     mm4, mm5;
-
-    // vert+write
-    psubw     mm4, mm2;
-    paddw     mm2, mm6;
-    pmulhw    mm4, mm1;
-    psllw     mm4, 1;
-    paddw     mm2, mm4;
-    psubusw   mm2, mm6;
-    movntq    [eax], mm2;
-    
-    emms;
-  }
-}
+#include "genbitmap_mmx.inc"
 
 static sInt GammaTable[1025];
 
@@ -383,348 +216,9 @@ GenBitmap * __stdcall Bitmap_RenderTarget(sInt xs,sInt ys,sU32 format)
 
 /****************************************************************************/
 
-void __stdcall Bitmap_Inner(sU64 *d,sU64 *s,sInt count,sInt mode,sU64 *x=0)
+GenBitmap * __stdcall Bitmap_Merge(sInt mode,sInt count,GenBitmap **bl)
 {
-  static const sU64 mask1 = 0x8000800080008000;
-
-  __asm
-  {
-    emms
-
-    mov       esi,[s]
-    mov       edi,[d]
-    mov       ebx,[x]
-    mov       ecx,[count]
-    mov       edx,[mode]
-
-    pcmpeqb	  mm3,mm3;
-		psrlw	    mm3,1;              ; mm3 = 0x7fff7fff7fff7fff
-    pcmpeqb	  mm4,mm4
-    psrlq		  mm4,16              ; mm4 = 0x00007fff7fff7fff
-    pcmpeqb	  mm5,mm5
-    pxor		  mm5,mm4             ; mm5 = 0x7fff000000000000
-    psrlw     mm4,1
-    psrlw     mm5,1
-    movq      mm2,[esi]           ; mm2 = data[0]
-    pcmpeqb	  mm7,mm7;
-		psrlw	    mm7,2;              ; mm7 = 0x3fff3fff3fff3fff
-    pxor      mm6,mm6             ; mm6 = 0x0000000000000000
-
-    shl       ecx,3;              ; ecx = number of bytes
-    add       esi,ecx;            ; esi = end of source
-    add       edi,ecx;            ; edi = end of dest
-    add       ebx,ecx;            ; ebx = end of source2
-    neg       ecx
-
-    lea       eax,loop0
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop1
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop2
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop3
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop4
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop5
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop6
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop7
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop8
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop9
-    dec       edx
-    js        loop_start
-
-    lea       eax,loopa
-    dec       edx
-    js        loop_start
-
-    lea       eax,loopb
-    dec       edx
-    js        loop_start
-
-    lea       eax,loopc
-    dec       edx
-    js        loop_start
-
-    lea       eax,loopd
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop0e
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop0f
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop10
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop11
-    dec       edx
-    js        loop_start
-
-    lea       eax,loop12
-    dec       edx
-    js        loop_start
-
-    movq      mm7,[esi+ecx+8]             ; mm7 = data[1]
-    psubsw    mm7,mm2
-    pxor      mm1,mm1
-    lea       eax,loop13
-
-loop_start:
-    jmp       eax
-loop0:                        // add
-    movq      mm0,[ebx+ecx];
-    paddsw    mm0,[esi+ecx];
-    jmp       loopo;
-
-loop1:                        // sub
-    movq      mm0,[ebx+ecx];
-    psubusw   mm0,[esi+ecx];
-    jmp       loopo
-
-loop2:                        // mul
-    movq      mm0,[ebx+ecx];
-    pmulhw    mm0,[esi+ecx];
-		psllw		  mm0,1;
-    jmp       loopo
-
-loop3:                        // diff
-    movq      mm0,[ebx+ecx];
-    psubw     mm0,[esi+ecx];
-    paddw     mm0,mm3
-    psrlw     mm0,1
-    jmp       loopo
-
-loop4:                        // alpha
-    movq      mm0,[esi+ecx]
-    movq      mm1,[ebx+ecx]
-		movq		  mm6,mm0
-		movq		  mm7,mm0
-
-		psrlq		  mm6,16
-		psrlq		  mm7,32
-		paddw		  mm0,mm6
-		paddw		  mm7,mm6
-		psrlw		  mm0,1
-		psrlw		  mm7,1
-		paddw		  mm0,mm7
-		pand		  mm1,mm4
-		psllq		  mm0,47
-		pand		  mm0,mm5
-		por			  mm0,mm1
-    jmp       loopo
-
-
-loop5:                      // mul color
-    movq      mm0,[ebx+ecx]
-	  pmulhw	  mm0,mm2
-	  psllw	    mm0,1
-    jmp       loopo
-
-loop6:                      // add color
-    movq      mm0,[ebx+ecx]
-    paddsw    mm0,mm2
-    jmp       loopo
-
-loop7:                      // sub color
-    movq      mm0,[ebx+ecx]
-    psubusw   mm0,mm2
-    jmp       loopo
-
-loop8:                      // gray color
-    movq      mm0,[ebx+ecx]
-		movq			mm6, mm0;
-		movq			mm7, mm0;
-
-		psrlq			mm6, 16;
-		psrlq			mm7, 32;
-		paddw			mm0, mm6;
-		paddw			mm7, mm6;
-		psrlw			mm0, 1;
-		psrlw			mm7, 1;
-		paddw			mm0, mm7;
-		psrlw			mm0, 1;
-
-		punpcklwd	mm0, mm0;
-		punpcklwd	mm0, mm0;
-		por				mm0, mm5;
-    jmp       loopo
-
-loop9:                      // invert color
-    movq      mm0,[ebx+ecx]
-    pxor      mm0,mm3
-    jmp       loopo
-
-loopa:                      // scale color
-		movq			mm0, [ebx+ecx];
-		movq			mm1, mm0;
-		pmullw		mm0, mm2;
-		pmulhw		mm1, mm2;
-		movq			mm6, mm0;
-		punpcklwd	mm0, mm1;
-		punpckhwd	mm6, mm1;
-		psrld			mm0, 11;
-		psrld			mm6, 11;
-		packssdw	mm0, mm6;
-    jmp       loopo
-
-loopb:                      // merge
-    movq      mm0,[edi+ecx];
-    movq      mm4,[esi+ecx];
-    movq      mm5,[ebx+ecx];
-    movq      mm1,mm3;
-    psubsw    mm1,mm0;
-    pmulhw    mm0,mm4;
-    pmulhw    mm1,mm5;
-    paddsw    mm0,mm1;
-    psllw     mm0,1
-    jmp       loopo
-
-loopc:                      // brigtness
-    movq      mm0,[esi+ecx];
-    movq      mm1,[ebx+ecx];
-    movq      mm2,mm0
-    pcmpgtw   mm2,mm7
-    psrlw     mm2,1
-
-    pxor      mm0,mm2
-    pxor      mm1,mm2
-	  pmulhw	  mm0,mm1
-	  psllw	    mm0,2
-    pxor      mm0,mm2
-    jmp       loopo
-
-
-loopd:                        // subr
-    movq      mm0,[esi+ecx];
-    psubusw   mm0,[ebx+ecx];
-    jmp       loopo
-
-loop0e:                      // mulmerge
-    movq      mm0,[edi+ecx];
-    movq      mm4,[esi+ecx];
-    movq      mm5,[ebx+ecx];
-    movq      mm1,mm3
-    pmulhw    mm4,mm5
-    psllw     mm4,1
-    psubsw    mm1,mm0
-    pmulhw    mm0,mm4
-    pmulhw    mm1,mm5
-    paddsw    mm0,mm1
-    psllw     mm0,1
-    jmp       loopo
-
-loop0f:                     // sharpen
-    movq      mm0,[ebx+ecx]
-    movq      mm3,mm0
-    psubusw   mm0,[edi+ecx]
-
-		movq			mm1,mm0
-		pmullw		mm0,mm2
-		pmulhw		mm1,mm2
-
-    movq			mm7,mm0
-		punpcklwd	mm0,mm1
-		punpckhwd	mm7,mm1
-		psrad			mm0,11
-		psrad			mm7,11
-		packssdw	mm0,mm7
-
-    paddsw    mm0,mm3
-    pmaxsw    mm0,mm6
-    jmp       loopo
-
-loop10:                      // hardlight
-    movq      mm1,[esi+ecx];
-    movq      mm0,[ebx+ecx];
-    psllw     mm1,1;
-    movq      mm2,mm1;
-    pand      mm1,mm3;
-    psraw     mm2,15;
-    movq      mm4,mm0;
-    pmulhw    mm0,mm1;
-    psllw     mm0,1;
-    paddw     mm1,mm4;
-    pxor      mm0,mm2;
-    pand      mm1,mm2;
-    paddw     mm0,mm1;
-    jmp       loopo
-
-loop11:                      // over
-    movq      mm0,[ebx+ecx];
-    movq      mm1,[esi+ecx];
-    movq      mm2,mm1;
-    psubsw    mm1,mm0;
-    punpckhwd mm2,mm2;
-    punpckhwd mm2,mm2;
-    pmulhw    mm1,mm2;
-    psllw     mm1,1;
-    paddsw    mm0,mm1;
-    pmaxsw    mm0,mm6;
-    /*paddw     mm0,[mask1];
-    psubsw    mm0,[mask1];*/
-    jmp       loopo
-
-loop12:                      // addsmooth (screen)
-    movq      mm0,[ebx+ecx];
-    movq      mm1,[esi+ecx];
-    pxor      mm0,mm3;
-    pxor      mm1,mm3;
-    pmulhw    mm0,mm1;
-    psllw     mm0,1;
-    pxor      mm0,mm3;
-
-    jmp       loopo;
-
-loop13:                      // color range
-    movq      mm0,[ebx+ecx]
-    pmulhw    mm0,mm7
-    psllw     mm0,1
-    paddsw    mm0,mm2
-    pmaxsw    mm0,mm1
-    /*paddw     mm0,mm6
-    psubusw   mm0,mm6*/
-
-loopo:
-    movq      [edi+ecx],mm0;
-    add       ecx, 8;
-    je        ende
-    jmp       eax
-
-ende:
-    emms
-  }
-}
-
-GenBitmap * __stdcall Bitmap_Merge(sInt mode,sInt count,GenBitmap *b0,...)
-{
+  GenBitmap *b0 = bl[0];
   sInt i;
   GenBitmap *bi,*in;
   SCRIPTVERIFY(b0);
@@ -732,9 +226,9 @@ GenBitmap * __stdcall Bitmap_Merge(sInt mode,sInt count,GenBitmap *b0,...)
   SCRIPTVERIFY(mode>=0 && mode<9);
   if(mode==5) mode=BI_BRIGHTNESS;  // ***SIZE
   if(mode>=6 && mode <=8) mode += BI_HARDLIGHT-6;
-  for(i=1;i<count && (&b0)[i];i++)
+  for(i=1;i<count && bl[i];i++)
   {
-    bi = ((&b0)[i]);
+    bi = (bl[i]);
     SCRIPTVERIFY(bi->ClassId==KC_BITMAP);
     if(b0->XSize!=bi->XSize || b0->YSize!=bi->YSize)
       return 0;
@@ -746,9 +240,9 @@ GenBitmap * __stdcall Bitmap_Merge(sInt mode,sInt count,GenBitmap *b0,...)
   if(CheckBitmap(b0,&in)) return 0;
 
   i = 1;
-  while(i<count && (&b0)[i])
+  while(i<count && bl[i])
   {
-    bi = ((&b0)[i]);
+    bi = (bl[i]);
     sVERIFY(b0->XSize==bi->XSize && b0->YSize==bi->YSize);
     Bitmap_Inner(b0->Data,bi->Data,b0->Size,mode,in->Data);
     bi->Release();
@@ -1329,7 +823,6 @@ GenBitmap * __stdcall Bitmap_Blur(GenBitmap *bm,sInt flags,sF32 sx,sF32 sy,sF32 
   }
   while(repeat--);
   
-  __asm { emms };
   sVERIFY(qq!=(sU16 *)bm->Data);
   delete[] qq;
 
@@ -1610,7 +1103,7 @@ GenBitmap * __stdcall Bitmap_RotateMul(GenBitmap *bm,sF32 angle,sF32 sx,sF32 sy,
         fade = (ca<<24)|(cr<<16)|(cg<<8)|(cb);
       }
       bm = Bitmap_Rotate(bm,angle,sx,sy,tx,ty,border,0,0);
-      bm = Bitmap_Merge(mode&15,2,bm,bb);
+      { GenBitmap *ml[2] = {bm,bb}; bm = Bitmap_Merge(mode&15,2,ml); }
       bb = (GenBitmap *) bm->Copy();
       angle = angle*2;
       tx = (tx-0.5f)*2+0.5f;
@@ -1626,7 +1119,7 @@ GenBitmap * __stdcall Bitmap_RotateMul(GenBitmap *bm,sF32 angle,sF32 sx,sF32 sy,
         bm = Bitmap_Color(bm,0,fade);
       bm->AddRef();
       bx = Bitmap_Rotate(bm,angle*i,(sx-1)*i+1,(sy-1)*i+1,(tx-0.5)*i+0.5,(ty-0.5)*i+0.5,border,0,0);
-      bb = Bitmap_Merge(mode&15,2,bb,bx);
+      { GenBitmap *ml[2] = {bb,bx}; bb = Bitmap_Merge(mode&15,2,ml); }
       i++;
     }
   }
@@ -1965,7 +1458,7 @@ GenBitmap * __stdcall Bitmap_Text(KOp *op,KEnvironment *kenv,GenBitmap *bm,sF32 
   sU32 fade;
   sInt xs,ys,xp,yp,yf,is,es,xp0,lsk;
   sU32 *s;
-#if !sINTRO
+#if !sINTRO || sCONFIG_WEB  // font pages feed the Print effect (menus, HUD)
   sInt w0,w1,w2;
   sInt count,chr;
   sInt page;
@@ -1994,7 +1487,7 @@ GenBitmap * __stdcall Bitmap_Text(KOp *op,KEnvironment *kenv,GenBitmap *bm,sF32 
   yp = y*ys+es;
 
   data = (sU8*)op->GetBlob(size);
-#if !sINTRO
+#if !sINTRO || sCONFIG_WEB  // font pages feed the Print effect (menus, HUD)
   page = (flags&0x70)>>4;
   if((flags&0x80) && data && data[0]==3 && data[1]==(page!=0) && 
     *((sU16 *)(data+2))==bm->XSize && *((sU16 *)(data+4))==bm->YSize)
@@ -2030,7 +1523,7 @@ GenBitmap * __stdcall Bitmap_Text(KOp *op,KEnvironment *kenv,GenBitmap *bm,sF32 
 
     yf = sSystem->FontBegin(xs,ys,font,xs*height,ys*width,4);
     lsk = lineskip * yf;
-#if !sINTRO
+#if !sINTRO || sCONFIG_WEB  // font pages feed the Print effect (menus, HUD)
     if(page)                            // font mode
     {
       count = 0;
@@ -2197,7 +1690,7 @@ GenBitmap * __stdcall Bitmap_Text(KOp *op,KEnvironment *kenv,GenBitmap *bm,sF32 
     sSystem->FontEnd();
   }
 
-#if !sINTRO
+#if !sINTRO || sCONFIG_WEB  // font pages feed the Print effect (menus, HUD)
   if(page)
   {
     for(i=0;i<256;i++)
@@ -2933,7 +2426,9 @@ GenBitmap * __stdcall Bitmap_Bricks(sInt bmxs,sInt bmys,sInt color0,sInt color1,
 /****************************************************************************/
 
 #include "genoverlay.hpp"
+#if sLINK_MINMESH
 #include "genminmesh.hpp"
+#endif
 
 void _stdcall Exec_Bitmap_Render(sInt xs,sInt ys)
 {
@@ -2992,6 +2487,7 @@ GenBitmap * __stdcall Bitmap_Render(KOp *op,class GenIPP *ipp,sInt xs,sInt ys)
 
 /****************************************************************************/
 
+#if sLINK_MINMESH
 GenBitmap * __stdcall Bitmap_RenderAuto(KOp *op,class GenMinMesh *mesh,sInt xs,sInt ys,sInt flags)
 {
   NOTEXTURES0();
@@ -3095,6 +2591,8 @@ GenBitmap * __stdcall Bitmap_RenderAuto(KOp *op,class GenMinMesh *mesh,sInt xs,s
   
   return bm;
 }
+#endif
+
 
 /****************************************************************************/
 /***                                                                      ***/

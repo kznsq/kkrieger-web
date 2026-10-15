@@ -11,8 +11,10 @@
 #include "material11.hpp"
 #include "_util.hpp"
 #include "_startdx.hpp"
+#if sLINK_FRIED
 #include "fried/fried.hpp"
-#include <xmmintrin.h>
+#endif
+// (xmmintrin.h not needed)
 
 extern sF32 GlobalFps;
 extern sBool IntroHighTexRes;
@@ -328,6 +330,7 @@ void __stdcall Exec_Effect_Print(KOp *op,KEnvironment *kenv,sInt flags,sF32 size
   sBool inf;
 
   mat = (GenMaterial *) op->GetLinkCache(0);
+
   if(!mat)
     return;
 
