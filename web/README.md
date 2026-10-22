@@ -21,7 +21,7 @@ URL options:
 
 - `?exe=url` runs another copy of the executable from the server instead of `original/pno0001.exe`.
 - `?mute` starts with the sound off.
-- `?debug` loads `debug.js`, rendering and collision diagnostics driven from the browser console (see the comment at its top).
+- `?debug` loads `debug.js`, rendering and collision diagnostics driven from the browser console (see the comment at its top). F8 then writes the player's position, its five body particles and the monsters and moving cells nearby to the log below the picture.
 - `?kx` loads `kkrieger3383.kx` instead, an unfinished development build of the game exported from the published editor source. This is **experimental**: its intro and menu work, but its game view renders white (see "Known gaps").
 
 ## Building

@@ -103,6 +103,19 @@ const DBG = (() => {
     mode(fn) { modeFn = fn; return 'mode set'; },
     // keep the player's life at 100 (on) or stop doing so (off)
     god(on = true) { clearInterval(DBG._god); DBG._god = on ? setInterval(() => wasm.kk_debug_life(100), 30) : 0; return 'god ' + on; },
+    // where the player is: the five body particles, monsters and moving cells
+    // within r, and whether any particle is outside the level or inside a solid
+    where(r = 4) {
+      const parts = [0, 1, 2, 3, 4].map((k) => 'p' + k + ' ' + DBG.part(0, k).replace(/ kind.*/, ''));
+      const near = DBG.coll(256).split('\n');
+      const p = near[0].match(/(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)/).slice(1).map(Number);
+      const close = near.slice(1).filter((l) => l.startsWith('cell') && (() => { const m = l.match(/at (-?[\d.]+),(-?[\d.]+),(-?[\d.]+)/); return m && Math.hypot(m[1] - p[0], m[3] - p[2]) < r; })());
+      const b = wasm.kk_alloc(24); wasm.kk_debug_check(b); const f = new Float32Array(mem(), b, 6);
+      const chk = 'outside ' + f[4] + ' inside ' + f[5]; wasm.kk_free(b);
+      return [near[0], ...parts, chk, ...close].join('\n');
+    },
+    // kill every monster now in play (collision tests without monster bodies)
+    killall() { return 'killed ' + wasm.kk_debug_killall(); },
     show(rt, last = false) { showRT = rt; showLast = last; snap = snap || { done: false }; return 'showing ' + rt; },
     // player position, moving cells (mode centre blocked monster) and particle groups (pos kind shot)
     coll(max = 64) {
@@ -116,6 +129,30 @@ const DBG = (() => {
         out.push(f[b] < 0 ? `part ${r(b + 1)},${r(b + 2)},${r(b + 3)} kind ${f[b + 4]} shot ${f[b + 5]} cell ${f[b + 9]}`
                            : `cell mode ${f[b]} at ${r(b + 1)},${r(b + 2)},${r(b + 3)} blocked ${f[b + 4]} monster ${f[b + 5]}` + (f[b + 5] ? ` life ${f[b + 6]} awake ${f[b + 7]}` : ''));
       }
+      wasm.kk_free(buf);
+      return out.join('\n');
+    },
+    // static solid cells whose box comes within r of the player: index, min, max, planes
+    subs(r = 6) {
+      const max = 4096, buf = wasm.kk_alloc(max * 8 * 4);
+      const n = wasm.kk_debug_subs(buf, max);
+      const f = new Float32Array(mem(), buf, n * 8);
+      const pb = wasm.kk_alloc(3 * 4); wasm.kk_debug_coll(pb, 0);
+      const p = new Float32Array(mem(), pb, 3);
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const b = i * 8, d = [0, 1, 2].map((k) => Math.max(f[b + k] - p[k], 0, p[k] - f[b + 3 + k]));
+        if (Math.hypot(...d) <= r) out.push(i + ': ' + [0, 1, 2, 3, 4, 5].map((k) => f[b + k].toFixed(2)).join(',') + ' planes ' + f[b + 6] + (f[b + 7] ? ' player-only' : ''));
+      }
+      wasm.kk_free(buf); wasm.kk_free(pb);
+      return 'player ' + Array.from(p).map((v) => v.toFixed(2)).join(',') + '\n' + out.join('\n');
+    },
+    subplanes(i) {
+      const buf = wasm.kk_alloc(64 * 4);
+      const ok = wasm.kk_debug_subplanes(i, buf);
+      const f = new Float32Array(mem(), buf, 64);
+      const out = ok ? ['planes ' + f[0]] : ['no cell'];
+      for (let k = 0; ok && k < f[0]; k++) out.push([0, 1, 2, 3].map((j) => f[1 + k * 4 + j].toFixed(4)).join(' '));
       wasm.kk_free(buf);
       return out.join('\n');
     },

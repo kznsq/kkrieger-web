@@ -302,6 +302,36 @@ extern "C" sInt kk_debug_coll(sF32 *out,sInt max)
   return n;
 }
 
+// debug.js: bounding boxes of the static solid cells (min x,y,z, max x,y,z,
+// plane count, player-only flag); returns how many were written
+extern "C" sInt kk_debug_subs(sF32 *out,sInt max)
+{
+  sInt n = 0;
+  for(sInt i=0;i<Game->CellSub.Count && n<max;i++,n++)
+  {
+    KKriegerCell *c = Game->CellSub[i];
+    sF32 *d = out+n*8;
+    d[0] = c->BBMin.x; d[1] = c->BBMin.y; d[2] = c->BBMin.z;
+    d[3] = c->BBMax.x; d[4] = c->BBMax.y; d[5] = c->BBMax.z;
+    d[6] = c->PlaneCount; d[7] = c->OnlyForShot;
+  }
+  return n;
+}
+
+// debug.js: planes of static solid cell i (count, then x,y,z,w per plane)
+extern "C" sInt kk_debug_subplanes(sInt i,sF32 *out)
+{
+  if(i<0 || i>=Game->CellSub.Count) return 0;
+  KKriegerCell *c = Game->CellSub[i];
+  out[0] = c->PlaneCount;
+  for(sInt k=0;k<c->PlaneCount;k++)
+  {
+    out[1+k*4] = c->Planes[k].x; out[2+k*4] = c->Planes[k].y;
+    out[3+k*4] = c->Planes[k].z; out[4+k*4] = c->Planes[k].w;
+  }
+  return 1;
+}
+
 // debug.js: planes of moving cell i (count, mode, then x,y,z,w per plane)
 extern "C" sInt kk_debug_cell(sInt i,sF32 *out)
 {
@@ -414,6 +444,16 @@ extern "C" void kk_debug_teleport(sF32 x,sF32 y,sF32 z,sF32 dir)
 {
   sVector p; p.Init(x,y,z,1);
   Game->SetPlayer(p,dir,0);
+}
+
+// debug.js: kills every monster of the current frame, so collision can be
+// tested without monster bodies in the way (DBG.killall)
+extern "C" sInt kk_debug_killall()
+{
+  if(!Game) return 0;
+  for(sInt i=0;i<Game->Monsters.Count;i++)
+    Game->Monsters[i]->Life = 0;
+  return Game->Monsters.Count;
 }
 
 // debug.js: keeps the player alive while inspecting the game (DBG.god)

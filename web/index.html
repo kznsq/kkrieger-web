@@ -241,6 +241,8 @@ function keyCode(e) {
 const down = new Set();
 window.addEventListener('keydown', (e) => {
   if (!ready) return;
+  // with ?debug, F8 writes where the player is and what is around to the log
+  if (e.code === 'F8' && params.has('debug')) { e.preventDefault(); worker.postMessage({ type: 'eval', code: 'DBG.where()' }); return; }
   const k = keyCode(e);
   if (!k) return;
   if (k !== KEY.ESCAPE || document.pointerLockElement) e.preventDefault();

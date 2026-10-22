@@ -25,7 +25,7 @@ done
 if [ -n "$LINK" ]; then
   /usr/local/bin/wasm-ld --no-entry --export-dynamic --initial-memory=67108864 \
     --max-memory=4294967296 --stack-first -z stack-size=8388608 --export=__heap_base --export=__wasm_call_ctors \
-    --export=kk_alloc --export=kk_free --export=kk_load --export=kk_load_kx --export=kk_init --export=kk_frame --export=kk_key --export=kk_light_info --export=kk_debug_life --export=kk_debug_coll --export=kk_debug_teleport --export=kk_debug_cell --export=kk_debug_ray --export=kk_debug_part --export=kk_debug_sweep --export=kk_debug_check \
+    --export=kk_alloc --export=kk_free --export=kk_load --export=kk_load_kx --export=kk_init --export=kk_frame --export=kk_key --export=kk_light_info --export=kk_debug_life --export=kk_debug_killall --export=kk_debug_coll --export=kk_debug_teleport --export=kk_debug_cell --export=kk_debug_subs --export=kk_debug_subplanes --export=kk_debug_ray --export=kk_debug_part --export=kk_debug_sweep --export=kk_debug_check \
     --export=kk_mouse --export=kk_resize --export=kk_render_sound --export=kk_heap_used --export=kk_heap_peak \
     $OBJS -o web/kkrieger.wasm
   ls -la web/kkrieger.wasm
