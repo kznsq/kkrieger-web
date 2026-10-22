@@ -1600,7 +1600,7 @@ void sPerlin3D(const sVector &pos,sVector &out)
 
   for(sInt j=0;j<3;j++)
   {
-    is[j] = sFtol(pos[j]-0.5f);   // integer coordinate
+    is[j] = sFtol(pos[j]);        // integer coordinate
     fs[j] = pos[j] - is[j];  // fractional part
     is[j] &= 255;           // integer grid wraps round 256
     fs[j] = sRange<sF32>(fs[j],1,0);

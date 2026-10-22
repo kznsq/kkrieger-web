@@ -622,8 +622,8 @@ GenScene * __stdcall Init_Scene_Walk(GenScene *scene0,
 #pragma lekktor(off)
 struct WalkMem : public KInstanceMem
 {
-//  KKriegerParticle FootPart[8];
-//  KKriegerParticle BodyPart;
+  KKriegerParticle FootPart[8];
+  KKriegerParticle BodyPart;
   sVector FootOld[8];
   sVector FootNew[8];
   sInt StepTime[8];
@@ -651,13 +651,13 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
   sMatrix dir;                    // desired orientation of walker
   sVector savevar[8],savetime;
   sVector v,sum,foot[8],spline[8],stepdir;
-//  sVector plane;
+  sVector plane,p0,p1;
   sInt i,j;
   sInt bestleg;
   sInt time;
   sF32 dist,f,t;
   sInt changestate;
-//  KKriegerCellAdd *cell;
+  KKriegerCellAdd *cell;
 
   sZONE(ExecWalk);
 
@@ -691,9 +691,9 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
   mem = kenv->GetInst<WalkMem>(op);
   if(mem->Reset || (Flags&0x100) || kenv->TimeReset)
   {
-//    cell = 0;
-//    if(Flags&2)
-//      cell = kenv->Game->FindCell(matrix.l);
+    cell = 0;
+    if(Flags&2)
+      cell = kenv->Game->FindCell(matrix.l);
     sum.Init();
     mem->FootCenter.Init();
     mem->InitSteps = FootCount*2;
@@ -704,13 +704,13 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
       v.w = 0;
       mem->FootOld[i] = mem->FootNew[i] = v;
       mem->StepTime[i] = StepSpeed[0];
-//      mem->FootPart[i].Init(v,sum,cell);
+      mem->FootPart[i].Init(v,sum,cell);
       mem->FootCenter.x += mem->FootDelta[i].x/FootCount;
       mem->FootCenter.z += mem->FootDelta[i].z/FootCount;
     }
-//    mem->FootPart[FootCount-1].EndMarker = 1;
-//    mem->BodyPart.Init(matrix.l,sum,cell);
-//    mem->BodyPart.EndMarker = 1;
+    mem->FootPart[FootCount-1].EndMarker = 1;
+    mem->BodyPart.Init(matrix.l,sum,cell);
+    mem->BodyPart.EndMarker = 1;
     mem->LastTime = kenv->CurrentTime;
     mem->NewPos = matrix.l;
     mem->State = 0;
@@ -980,15 +980,11 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
         v = mem->FootDelta[i];
         v.y = 0;
         v.Rotate34(dir);
-        /*
+        mem->FootNew[i] = v;          // do the step in any case...
+        mem->StepTime[i] = j;
+
         if(mem->FootPart[i].Cell) 
         {
-          KKriegerCellAdd *cell;
-          sVector p0,p1;
-
-          mem->FootNew[i] = v;        // do the step in any case...
-          mem->StepTime[i] = j;
-
           kenv->Game->CollisionForMonsterMode = 1;      // and then find a better point--
 
           p0 = v; p0.y += scanup;
@@ -1008,11 +1004,6 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
           }
 
           kenv->Game->CollisionForMonsterMode = 0;
-        }
-        else*/
-        {
-          mem->FootNew[i] = v;
-          mem->StepTime[i] = j;
         }
       }
       LastLeg = NextLeg;
@@ -1048,8 +1039,8 @@ void __stdcall Exec_Scene_Walk(KOp *op,KEnvironment *kenv,
     kenv->Var[KV_LEG_L0+i] = savevar[i];
   }
   kenv->Var[KV_LEG_TIMES] = savetime;
-//  if(kenv->CurrentEvent)
-//    kenv->CurrentEvent->ReturnMatrix = mat;
+  if(kenv->CurrentEvent)
+    kenv->CurrentEvent->ReturnMatrix = mat;
 }
 #pragma lekktor(on)
 
@@ -1194,34 +1185,31 @@ struct PhysicMem : KInstanceMem
 {
   sInt Flags;
   KKriegerCellDynamic Cell;
-//  KKriegerParticle Part;
-//  KKriegerPartBox Box;
+  KKriegerParticle Part;
+  KKriegerPartBox Box;
 };
 
 void __stdcall Exec_Scene_Physic(KOp *op,KEnvironment *kenv,sInt flags,sF323 speedf,sF323 scalef,sF323 rmassf,sF32 mass,sInt partkind)
 {
-  sMatrix mat;//,save;
+  sMatrix mat;
   PhysicMem *mem;
   sVector speed;
   sVector scale;
-  KEvent *monsterevent;
+  KEvent *shotevent;
   sMatrix m1;
-//  sInt i;
-  KKriegerCellDynamic *monstercell;
+  sInt i;
+  KKriegerCellDynamic *skipcell;
 
   speed.Init(speedf.x,speedf.y,speedf.z);
   scale.Init(scalef.x,scalef.y,scalef.z);
 
-  monsterevent = 0;
-  monstercell =0 ;
+  shotevent = 0;                    // flag 0x20: a shot, ended by its first impact
+  skipcell = 0;
   if(flags & 0x20)
   {
-    monsterevent = kenv->CurrentEvent;
-    if(monsterevent && monsterevent->Monster==0)
-      monstercell = &kenv->Game->Player.HitCell;
+    shotevent = kenv->CurrentEvent;
+    skipcell = &kenv->Game->Player.Body.HitCell;
   }
-  //save = kenv->ExecMatrix;
-  //mat = save;
   mat = kenv->ExecStack.Top();
   speed.Rotate3(mat);
   mem = kenv->GetInst<PhysicMem>(op);
@@ -1235,79 +1223,49 @@ void __stdcall Exec_Scene_Physic(KOp *op,KEnvironment *kenv,sInt flags,sF323 spe
     {
     case 0:
     default:
-      /*
       mem->Part.Init(mat.l,speed,kenv->Game->PlayerCell);
       mem->Part.EndMarker = 1;
       mem->Part.Mass = mass;
       mem->Part.Kind = partkind;
-      mem->Part.ShotEvent = monsterevent;
-      mem->Part.SkipCell = monstercell;
-      */
+      mem->Part.ShotEvent = shotevent;
+      mem->Part.SkipCell = skipcell;
       break;
     case 1:
-      /*
       mem->Box.Init(mat,scale,speed,kenv->Game->PlayerCell);
       for(i=0;i<8;i++)
       {
         mem->Box.Part[i].Mass = mass;
         mem->Box.Part[i].Kind = partkind;
-        mem->Box.Part[i].ShotEvent = monsterevent;
-        mem->Box.Part[i].SkipCell = monstercell;
+        mem->Box.Part[i].ShotEvent = shotevent;
+        mem->Box.Part[i].SkipCell = skipcell;
       }
-      */
       break;
     case 2:
       mem->Cell.Init(m1,scale,KCM_SUB);
       mem->Cell.PrepareDynamic(mat);
       break;
     case 3:
-      /*
-      mem->Cell.Init(m1,scale,KCM_SUB);
-      mem->Cell.PrepareDynamic(mat);
-      mem->Box.Init(mat,scale,speed,kenv->Game->PlayerCell);
-      for(i=0;i<8;i++)
-      {
-        mem->Box.Part[i].SkipCell = &mem->Cell;
-        mem->Box.Part[i].Kind = partkind;
-        mem->Box.Part[i].ShotEvent = monsterevent;
-      }
-      mem->Cell.PartBox = &mem->Box;
-*/
       break;
     }
   }
-
-  if(flags & 0x10)
-    mem->Cell.Monster = kenv->EventMonster;
 
   switch(mem->Flags&3)
   {
   case 0:
   default:
-/*
     kenv->Game->AddPart(&mem->Part);
     mat.l = mem->Part.Pos;
     mat.l.w = 1.0f;
-*/
     break;
   case 1:
-/*
     mem->Box.GetMatrix(mat);
     mem->Box.Register(kenv->Game);
-*/
     break;
   case 2:
     mem->Cell.Matrix1 = mat;
     kenv->Game->AddDCell(&mem->Cell);
     break;
   case 3:
-/*
-    mat = mem->Cell.ConfirmedMatrix;
-//    mem->Box.GetMatrix(mat);
-//    mem->Cell.Matrix1 = mat;
-    mem->Box.Register(kenv->Game);
-    kenv->Game->AddDCell(&mem->Cell);
-*/
     break;
   }
 

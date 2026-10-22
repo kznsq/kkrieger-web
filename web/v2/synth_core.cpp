@@ -1,3 +1,8 @@
+// This copy of libv2 follows the V2 build inside kkrieger's 2004 executable:
+// no DC filters (voice, channel or master), key sync only restarts the
+// oscillators, and the Ronan speech synthesizer (ronan.cpp) processes
+// channel 15.
+
 #include "types.h"
 #include "synth.h"
 #include <math.h>
@@ -71,7 +76,6 @@ static const sF32 fcoscbase   = 261.6255653f; // Oscillator base freq
 static const sF32 fcsrbase    = 44100.0f;     // Base sampling rate
 static const sF32 fcboostfreq = 150.0f;       // Bass boost cut-off freq
 static const sF32 fcframebase = 128.0f;       // size of a frame in samples
-static const sF32 fcdcflt     = 126.0f;
 static const sF32 fccfframe   = 11.0f;
 
 static const sF32 fcfmmax     = 2.0f;
@@ -124,10 +128,13 @@ static sF32 fastatan(sF32 x)
   // just aren't accurate enough to warrant it :)
   static const sF32 coeffs[2][6] = {
     //          cx1          cx3         cxm0         cxm2         cxm4         bias
-    {          1.0f, 0.43157974f,        1.0f, 0.05831938f, 0.76443945f,        0.0f },
-    { -0.431597974f,       -1.0f, 0.05831938f,        1.0f, 0.76443945f, 1.57079633f },
+    {          1.0f, 0.43157974f,        1.0f, 0.76443945f, 0.05831938f,        0.0f },
+    { -0.431597974f,       -1.0f, 0.05831938f, 0.76443945f,        1.0f, 1.57079633f },
   };
-  const sF32 *c = coeffs[x >= 1.0f]; // interestingly enough, V2 code does this test wrong (cmovge instead of cmovae)
+  // V2 picks the |x| >= 1.0 approximation with a signed compare of the
+  // exponent byte, which holds only for 1 <= |x| < 2; larger values take the
+  // |x| < 1.0 one and fall back towards 0 (part of V2's overdrive sound)
+  const sF32 *c = coeffs[x >= 1.0f && x < 2.0f];
   sF32 x2 = x*x;
   sF32 r = (c[1]*x2 + c[0])*x / ((c[4]*x2 + c[3])*x2 + c[2]) + c[5];
   return r * sign;
@@ -332,28 +339,6 @@ struct V2Moog
   }
 };
 
-// DC filter state. Just a highpass used with a very low cut-off
-// to remove DC offsets from a signal.
-struct V2DCF
-{
-  sF32 xm1; // x(n-1)
-  sF32 ym1; // y(n-1)
-
-  void init()
-  {
-    xm1 = ym1 = 0.0f;
-  }
-
-  sF32 step(sF32 in, sF32 R)
-  {
-    // y(n) = x(n) - x(n-1) + R*y(n-1)
-    sF32 y = (fcdcoffset + R*ym1 - xm1 + in) - fcdcoffset;
-    xm1 = in;
-    ym1 = y;
-    return y;
-  }
-};
-
 // Constant-length delay line
 class V2Delay
 {
@@ -423,7 +408,6 @@ struct V2Instance
   sF32 SRfcobasefrq;
   sF32 SRfclinfreq;
   sF32 SRfcBoostCos, SRfcBoostSin;
-  sF32 SRfcdcfilter;
 
   sInt SRcFrameSize;
   sF32 SRfciframe;
@@ -446,7 +430,6 @@ struct V2Instance
     SRfcsamplesperms = sr / 1000.0f;
     SRfcobasefrq = (fcoscbase * fc32bit) / sr;
     SRfclinfreq = fcsrbase / sr;
-    SRfcdcfilter = 1.0f - fcdcflt / sr;
 
     // frame size
     SRcFrameSize = (sInt)(fcframebase * sr / fcsrbase + 0.5f);
@@ -847,7 +830,7 @@ private:
       output(dest + i, gain * x);
     }
 
-    flt = nf;
+    nf = flt;
     nseed = seed;
   }
 
@@ -865,8 +848,11 @@ private:
     // And it's very little code too :)
     for (sInt i=0; i < nsamples; i++)
     {
+      // V2 adds the modulation to the phase as 1 + cnt/2^32 (in [1,2)): a
+      // whole turn more than utof23 gives, which keeps most modulated
+      // phases out of fastsinrc's broken range below 0
       sF32 mod = dest[i] * fcfmmax;
-      sF32 t = (utof23(cnt) + mod) * fc2pi;
+      sF32 t = (mod + bits2float((cnt >> 9) | 0x3f800000)) * fc2pi;
       cnt += freq;
 
       sF32 out = gain * fastsinrc(t);
@@ -1530,45 +1516,6 @@ private:
 
 // This is just a high-pass with very low cut-off to remove DC offsets from
 // the signal.
-struct V2DCFilter
-{
-  V2DCF fl;         // left/mono filter state
-  V2DCF fr;         // right filter state
-  V2Instance *inst;
-
-  void init(V2Instance *instance)
-  {
-    inst = instance;
-    fl.init();
-    fr.init();
-  }
-
-  void renderMono(sF32 *dest, const sF32 *src, sInt nsamples)
-  {
-    sF32 R = inst->SRfcdcfilter;
-
-    V2DCF l = fl;
-    for (sInt i=0; i < nsamples; i++)
-      dest[i] = l.step(src[i], R);
-    fl = l;
-  }
-
-  void renderStereo(StereoSample *dest, const StereoSample *src, sInt nsamples)
-  {
-    sF32 R = inst->SRfcdcfilter;
-
-    V2DCF l = fl;
-    V2DCF r = fr;
-    for (sInt i=0; i < nsamples; i++)
-    {
-      dest[i].l = l.step(src[i].l, R);
-      dest[i].r = r.step(src[i].r, R);
-    }
-    fl = l;
-    fr = r;
-  }
-};
-
 // --------------------------------------------------------------------------
 // V2 Voice
 // --------------------------------------------------------------------------
@@ -1631,7 +1578,6 @@ struct V2Voice
   V2Env env[syVV2::NENV];
   V2LFO lfo[syVV2::NLFO];
   V2Dist dist;    // distorter
-  V2DCFilter dcf; // post DC filter
 
   V2Instance *inst;
 
@@ -1646,7 +1592,6 @@ struct V2Voice
     for (sInt i=0; i < syVV2::NLFO; i++)
       lfo[i].init(instance);
     dist.init(instance);
-    dcf.init(instance);
     inst = instance;
   }
 
@@ -1702,9 +1647,6 @@ struct V2Voice
 
     // voice buffer -> distortion -> voice buffer
     dist.renderMono(voice, voice, nsamples);
-
-    // voice buffer -> dc filter -> voice buffer
-    dcf.renderMono(voice, voice, nsamples);
 
     DEBUG_PLOT(this, voice, nsamples);
 
@@ -1777,33 +1719,12 @@ struct V2Voice
     for (sInt i=0; i < syVV2::NENV; i++)
       env[i].state = V2Env::ATTACK;
 
-    // process sync
-    switch (keysync)
+    // process sync: osc and full sync both restart the oscillators
+    if (keysync != SYNC_NONE)
     {
-    case SYNC_FULL:
-      COVER("VOICE noteOn sync full");
-      for (sInt i=0; i < syVV2::NENV; i++)
-        env[i].val = 0.0f;
-      curvol = 0.0f;
-
-      for (sInt i=0; i < syVV2::NOSC; i++)
-        osc[i].init(inst, i);
-
-      for (sInt i=0; i < syVV2::NFLT; i++)
-        vcf[i].init(inst);
-
-      dist.init(inst);
-      // fall-through
-
-    case SYNC_OSC:
       COVER("VOICE noteOn sync osc");
       for (sInt i=0; i < syVV2::NOSC; i++)
         osc[i].cnt = 0;
-      // fall-through
-
-    case SYNC_NONE:
-    default:
-      break;
     }
 
     for (sInt i=0; i < syVV2::NOSC; i++)
@@ -1811,8 +1732,6 @@ struct V2Voice
 
     for (sInt i=0; i < syVV2::NLFO; i++)
       lfo[i].keyOn();
-
-    dcf.init(inst);
   }
 
   void noteOff()
@@ -2027,12 +1946,14 @@ private:
     // determine effective offset
     sU64 offs32_32 = (sU64)counter * mmaxoffs; // 32.32 fixed point
     sU32 offs_int = sU32(offs32_32 >> 32) + dboffs[ch];
-    sU32 index = dbptr - offs_int;
+    sU32 index = dbptr - offs_int - (ch ? 1 : 0);
 
-    // linear interpolation using low-order bits of offs32_32.
+    // linear interpolation using low-order bits of offs32_32, as V2 does it:
+    // from index towards index+1 by 1-fraction, so the left channel reads one
+    // sample less delay than the right
     sF32 *delaybuf = db[ch];
-    sF32 x = utof23((sU32)(offs32_32 & 0xffffffffu));
-    sF32 delayed = lerp(delaybuf[(index - 0) & dbufmask], delaybuf[(index - 1) & dbufmask], x);
+    sF32 x = 2.0f - bits2float(((sU32)offs32_32 >> 9) | 0x3f800000);
+    sF32 delayed = lerp(delaybuf[index & dbufmask], delaybuf[(index + 1) & dbufmask], x);
     
     // mix and output
     delaybuf[dbptr] = in + delayed*fbval;
@@ -2090,6 +2011,7 @@ struct V2Comp
   };
 
   sInt mode;      // bit 0: Peak/RMS, bit 1: Stereo, bit 2: off
+  sInt oldmode;   // mode the state was last reset for (0 after init)
 
   sF32 invol;     // input gain (1/threshold, internal threshold is always 0dB)
   sF32 ratio;
@@ -2110,13 +2032,24 @@ struct V2Comp
 
   V2Instance *inst;
 
+  // V2 starts from zeroed state with only the mode set, so a compressor
+  // whose first mode is peak mono (0, same as oldmode) keeps a gain of 0
+  // and fades in at the release speed
   void init(V2Instance *instance)
   {
     mode = MODE_BIT_STEREO;
+    oldmode = 0;
+    for (sInt i=0; i < 2; i++)
+    {
+      peakval[i] = 0.0f;
+      rmsval[i] = 0.0f;
+      curgain[i] = 0.0f;
+    }
     memset(dbuf, 0, sizeof(dbuf));
+    memset(rmsbuf, 0, sizeof(rmsbuf));
+    dbcnt = 0;
+    rmscnt = 0;
     inst = instance;
-
-    reset();
   }
 
   void reset()
@@ -2128,12 +2061,10 @@ struct V2Comp
       curgain[i] = 1.0f;
     }
     memset(rmsbuf, 0, sizeof(rmsbuf));
-    rmscnt = 0;
   }
 
   void set(const syVComp *para)
   {
-    sInt oldmode = mode;
     switch ((sInt)para->mode)
     {
     case MODE_OFF:  mode = MODE_BIT_OFF; break;
@@ -2146,11 +2077,14 @@ struct V2Comp
       mode |= MODE_BIT_STEREO;
 
     if (mode != oldmode)
+    {
+      oldmode = mode;
       reset();
+    }
 
     // @@@BUG: original V2 code uses "fcsamplesperms" here which is
     // hard-coded to 44.1kHz
-    dblen = (sInt)(para->lookahead * inst->SRfcsamplesperms);
+    dblen = (sInt)lrintf(para->lookahead * inst->SRfcsamplesperms);
 
     sF32 thresh = 8.0f * calcfreq(para->threshold / 128.0f);
     invol = 1.0f / thresh;
@@ -2222,7 +2156,7 @@ struct V2Comp
         // lookahead delay line
         sF32 v = outvol * dbuf[dbind].ch[ch];
         dbuf[dbind].ch[ch] = invol * buf[i].ch[ch];
-        if (++dbind >= dblen)
+        if (++dbind > dblen) // the line holds dblen+1 samples, as in V2
           dbind = 0;
 
         // determine dest gain
@@ -2244,15 +2178,20 @@ struct V2Comp
   
 private:
   // level detection variants
+  // V2's level detectors take no denormal bias; a decayed peak below 1e-30
+  // is flushed to 0 instead, so long silences avoid slow denormal arithmetic
   inline sF32 doPeak(sF32 in, sInt ch)
   {
-    peakval[ch] = max(peakval[ch] * fccpdfalloff + fcdcoffset, fabsf(in));
+    sF32 decayed = peakval[ch] * fccpdfalloff;
+    if (decayed < 1e-30f)
+      decayed = 0.0f;
+    peakval[ch] = max(decayed, fabsf(in));
     return peakval[ch];
   }
 
   inline sF32 doRMS(sF32 in, sInt ch)
   {
-    sF32 insq = sqr(in + fcdcoffset);
+    sF32 insq = sqr(in);
     rmsval[ch] += insq - rmsbuf[rmscnt].ch[ch]; // add new sample, remove oldest
     rmsbuf[rmscnt].ch[ch] = insq; // keep track of value we added
     return sqrtf(rmsval[ch] / (sF32)RMSLEN);
@@ -2380,6 +2319,7 @@ struct V2Reverb
           sF32 dv = gainc[j] * combd[ch][j].fetch();
           sF32 nv = (j & 1) ? (dv - in) : (dv + in); // alternate phase on combs
           sF32 lp = combl[ch][j] + damp * (nv - combl[ch][j]);
+          combl[ch][j] = lp;
           combd[ch][j].feed(lp);
           cur += lp;
         }
@@ -2437,10 +2377,8 @@ struct V2Chan
   sF32 aarcv;     // aux a receive gain
   sF32 abrcv;     // aux b receive gain
   sInt fxr;
-  V2DCFilter dcf1;
   V2Boost boost;
   V2Dist dist;
-  V2DCFilter dcf2;
   V2ModDel chorus;
   V2Comp comp;
 
@@ -2449,10 +2387,8 @@ struct V2Chan
   void init(V2Instance *instance, sF32 *delbuf1, sF32 *delbuf2, sInt buflen)
   {
     inst = instance;
-    dcf1.init(inst);
     boost.init(inst);
     dist.init(inst);
-    dcf2.init(inst);
     chorus.init(inst, delbuf1, delbuf2, buflen);
     comp.init(inst);
   }
@@ -2482,21 +2418,17 @@ struct V2Chan
     accumulate(chan, inst->auxbbuf, nsamples, abrcv);
 
     // Filters
-    dcf1.renderStereo(chan, chan, nsamples);
-    DEBUG_PLOT_STEREO(&dcf1, chan, nsamples);
     comp.render(chan, nsamples);
     boost.render(chan, nsamples);
     if (fxr == FXR_DIST_THEN_CHORUS)
     {
       dist.renderStereo(chan, chan, nsamples);
-      dcf2.renderStereo(chan, chan, nsamples);
       chorus.renderChan(chan, nsamples);
     }
     else // FXR_CHORUS_THEN_DIST
     {
       chorus.renderChan(chan, nsamples);
       dist.renderStereo(chan, chan, nsamples);
-      dcf2.renderStereo(chan, chan, nsamples);
     }
 
     // Aux1/2 send (mono)
@@ -2613,7 +2545,7 @@ struct V2ChanInfo
 // would turn out fairly awkward in this C++ version, hence the split.
 struct V2Synth
 {
-  static const sInt POLY = 64;
+  static const sInt POLY = 32;  // the 2004 build's polyphony
   static const sInt CHANS = 16;
 
   const V2PatchMap *patchmap;
@@ -2644,7 +2576,6 @@ struct V2Synth
 
   V2Reverb reverb;
   V2ModDel delay;
-  V2DCFilter dcf;
   V2Comp compr;
   sF32 lcfreq;    // low cut freq
   sF32 lcbuf[2];  // low cut buf l/r
@@ -2695,7 +2626,6 @@ struct V2Synth
     delay.init(&instance, maindelbuf[0], maindelbuf[1], COUNTOF(maindelbuf[0]));
     ronanCBInit(&ronan);
     compr.init(&instance);
-    dcf.init(&instance);
 
     // debug plots (uncomment the ones you want)
     sInt sr_plot = 44100/10; // plot rate
@@ -2709,8 +2639,6 @@ struct V2Synth
     //DEBUG_PLOT_OPEN(&voicesw[1].lfo[0], "Voice 1 LFO 0", sr_lfo, w, h);
     //DEBUG_PLOT_OPEN(&voicesw[1].dist, "Voice 1 Dist", sr_plot, w, h);
     //DEBUG_PLOT_OPEN(&voicesw[1], "Voice 1 final", sr_plot, w, h);
-    //DEBUG_PLOT_OPEN(DEBUG_PLOT_CHAN(&chansw[0].dcf1, 0), "Chan 0 DCF1 L", sr_plot, w, h);
-    //DEBUG_PLOT_OPEN(DEBUG_PLOT_CHAN(&chansw[0].dcf1, 1), "Chan 0 DCF1 R", sr_plot, w, h);
     //DEBUG_PLOT_OPEN(DEBUG_PLOT_CHAN(&chansw[0], 0), "Channel 0 L", sr_plot, w, h);
     //DEBUG_PLOT_OPEN(DEBUG_PLOT_CHAN(&chansw[0], 1), "Channel 0 R", sr_plot, w, h);
     //DEBUG_PLOT_OPEN(DEBUG_PLOT_CHAN(&instance.mixbuf, 0), "Mix L", sr_plot, w, h);
@@ -2813,7 +2741,7 @@ struct V2Synth
           // voice allocation. this is equivalent to the original V2 code,
           // but hopefully simpler to follow.
           sInt usevoice = -1;
-          sInt chanmask, chanfind;
+          bool ownchan;   // only take voices playing on this channel
 
           if (!npoly || npoly < sound->maxpoly) // even if maxpoly is 0, allow at least 1.
           {
@@ -2830,8 +2758,7 @@ struct V2Synth
 
             // okay, need to find a free voice. we'll take any channel.
             COVER("SYN find voice any");
-            chanmask = 0;
-            chanfind = 0;
+            ownchan = false;
           }
           else
           {
@@ -2839,8 +2766,7 @@ struct V2Synth
             // used by this channel, so we can limit ourselves to killing
             // voices from our own chan.
             COVER("SYN find voice channel");
-            chanmask = 0xf;
-            chanfind = chan;
+            ownchan = true;
           }
 
           // don't have a voice yet? kill oldest eligible one with gate off.
@@ -2850,7 +2776,7 @@ struct V2Synth
             sU32 oldest = curalloc;
             for (sInt i=0; i < POLY; i++)
             {
-              if ((chanmap[i] & chanmask) == chanfind && !voicesw[i].gate && allocpos[i] < oldest)
+              if ((!ownchan || chanmap[i] == chan) && !voicesw[i].gate && allocpos[i] < oldest)
               {
                 oldest = allocpos[i];
                 usevoice = i;
@@ -2865,7 +2791,7 @@ struct V2Synth
             sU32 oldest = curalloc;
             for (sInt i=0; i < POLY; i++)
             {
-              if ((chanmap[i] & chanmask) == chanfind && allocpos[i] < oldest)
+              if ((!ownchan || chanmap[i] == chan) && allocpos[i] < oldest)
               {
                 oldest = allocpos[i];
                 usevoice = i;
@@ -2892,6 +2818,7 @@ struct V2Synth
         if (chan == CHANS-1)
           ronanCBNoteOff(&ronan);
 
+        // release the first voice playing this note
         for (sInt i=0; i < POLY; i++)
         {
           if (chanmap[i] != chan)
@@ -2899,7 +2826,10 @@ struct V2Synth
 
           V2Voice *voice = &voicesw[i];
           if (voice->note == cmd[0] && voice->gate)
+          {
             voice->noteOff();
+            break;
+          }
         }
         cmd += 2;
         break;
@@ -3226,7 +3156,6 @@ private:
     StereoSample *mix = instance.mixbuf;
     reverb.render(mix, nsamples);
     delay.renderAux2Main(mix, nsamples);
-    dcf.renderStereo(mix, mix, nsamples);
 
     // low cut/high cut
     sF32 lcf = lcfreq, hcf = hcfreq;

@@ -43,7 +43,7 @@ JS(gl_constants)      void gl_constants(sInt pixel,const sF32 *data,sInt count);
 
 JS(js_sound_position) sInt js_sound_position();
 JS(js_sample_add)     void js_sample_add(sInt handle,const sS16 *data,sInt samples,sInt is3d);
-JS(js_sample_play)    sInt js_sample_play(sInt handle,sF32 volume,sF32 pan,sInt freq);
+JS(js_sample_play)    sInt js_sample_play(sInt handle,sF32 left,sF32 right,sInt freq);
 JS(js_sample_3d)      void js_sample_3d(sInt handle,sInt buffer,sF32 x,sF32 y,sF32 z,sF32 mindist,sF32 maxdist);
 JS(js_listener)       void js_listener(sF32 x,sF32 y,sF32 z,sF32 fx,sF32 fy,sF32 fz,sF32 ux,sF32 uy,sF32 uz);
 

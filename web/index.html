@@ -16,8 +16,6 @@
   #overlay.hidden { display: none; }
   h1 { margin: 0; font-weight: 600; letter-spacing: 0.02em; }
   .dim { color: var(--dim); max-width: 34em; }
-  #drop { border: 1px dashed var(--dim); padding: 18px 26px; border-radius: 8px; cursor: pointer; }
-  #drop.over { border-color: var(--accent); color: var(--accent); }
   #bar { width: 60%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; display: none; }
   #bar > div { height: 100%; width: 0; background: var(--accent); }
   #bar2 { width: min(100%, 1024px); display: flex; justify-content: flex-end; gap: 12px; margin-top: 8px; }
@@ -33,8 +31,6 @@
     <div id="overlay">
       <h1>.kkrieger</h1>
       <div class="dim">The 96&nbsp;KB first-person shooter by .theprodukkt (Breakpoint 2004), running from the original executable.</div>
-      <label id="drop">Drop <b>pno0001.exe</b> here, or click to choose it
-        <input id="file" type="file" accept=".exe" hidden></label>
       <div class="dim" id="status"></div>
       <div id="bar"><div></div></div>
     </div>
@@ -49,7 +45,6 @@ const overlay = document.getElementById('overlay');
 const statusEl = document.getElementById('status');
 const bar = document.getElementById('bar');
 const logEl = document.getElementById('log');
-const drop = document.getElementById('drop');
 let worker = null;
 let ready = false;
 const params = new URLSearchParams(location.search);
@@ -63,7 +58,6 @@ function log(text, cls) {
 
 function start(exe, kx) {
   if (worker) return;
-  drop.style.display = 'none';
   statusEl.textContent = 'Unpacking the executable and generating textures, meshes and sound…';
   bar.style.display = 'block';
   const off = canvas.transferControlToOffscreen();
@@ -83,7 +77,7 @@ function start(exe, kx) {
       case 'exit': log('game exited'); break;
       case 'audio': if (audio.node) audio.node.port.postMessage(m.data, [m.data.buffer]); break;
       case 'sample': addSample(m.handle, m.data, m.is3d); break;
-      case 'play': playSample(m.handle, m.voice, m.vol, m.pan); break;
+      case 'play': playSample(m.handle, m.voice, m.left, m.right); break;
       case 'sound3d': for (const e of m.list) place3d(...e); break;
       case 'listener': placeListener(m.v); break;
     }
@@ -93,26 +87,17 @@ function start(exe, kx) {
   worker.postMessage({ type: 'start', canvas: off, ...payload, debug: params.has('debug') }, [off, exe]);
 }
 
-async function loadFile(f) {
-  start(await f.arrayBuffer());
+function fetchAndStart(url, kx) {
+  fetch(url).then((r) => r.ok ? r.arrayBuffer() : Promise.reject(r.status))
+    .then((b) => start(b, kx)).catch((e) => { log('could not fetch ' + url + ': ' + e, 'err'); statusEl.textContent = 'Could not load ' + url + '.'; });
 }
 
-document.getElementById('file').addEventListener('change', (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); });
-drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
-drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
-
-function startKx() {
-  fetch('kkrieger3383.kx').then((r) => r.ok ? r.arrayBuffer() : Promise.reject(r.status))
-    .then((b) => start(b, true)).catch((e) => log('could not fetch kkrieger3383.kx: ' + e, 'err'));
-}
-
-// optional: ?exe=url to fetch the executable (local testing); ?kx loads the
-// development build exported with the published source (experimental: its
-// game view does not render correctly yet)
-const exeUrl = new URLSearchParams(location.search).get('exe');
-if (exeUrl) fetch(exeUrl).then((r) => r.ok ? r.arrayBuffer() : Promise.reject(r.status)).then((b) => start(b)).catch((e) => log('could not fetch ' + exeUrl + ': ' + e, 'err'));
-else if (params.has('kx')) startKx();
+// The page runs the original release shipped next to it (original/, as
+// .theprodukkt released it). ?exe=url runs another copy of the executable;
+// ?kx runs the development build exported with the published source
+// (experimental: its game view does not render correctly yet).
+if (params.has('kx')) fetchAndStart('kkrieger3383.kx', true);
+else fetchAndStart(params.get('exe') || 'original/pno0001.exe', false);
 
 /* sound ------------------------------------------------------------------ */
 // The worker renders the music ahead of playback (V2 synthesizer, 44.1 kHz
@@ -170,26 +155,33 @@ function addSample(h, data, is3d) {
   audio.voices[h] = [];
 }
 
-function playSample(h, voice, vol, pan) {
+// left and right are the channel gains (the engine converts volume and pan)
+function playSample(h, voice, left, right) {
   const s = audio.samples[h];
   if (!audio.ctx || !s || !s.buffer) return;
   const slot = (voice - 1) & 3, old = audio.voices[h][slot];
   if (old) try { old.src.stop(); } catch (e) { /* already ended */ }
-  const ctx = audio.ctx, src = ctx.createBufferSource(), gain = ctx.createGain();
+  const ctx = audio.ctx, src = ctx.createBufferSource();
   src.buffer = s.buffer;
-  gain.gain.value = Math.max(0, Math.min(1, vol));
-  let out;
+  let panner = null;
   if (s.is3d) {
-    out = ctx.createPanner();
-    out.panningModel = 'equalpower';
-    out.distanceModel = 'inverse';
+    const gain = ctx.createGain();
+    gain.gain.value = left;
+    panner = ctx.createPanner();
+    panner.panningModel = 'equalpower';
+    panner.distanceModel = 'inverse';
+    src.connect(gain); gain.connect(panner); panner.connect(audio.master);
   } else {
-    out = ctx.createStereoPanner();
-    out.pan.value = Math.max(-1, Math.min(1, pan / 100));
+    const split = ctx.createChannelSplitter(2), merge = ctx.createChannelMerger(2);
+    const gl = ctx.createGain(), gr = ctx.createGain();
+    gl.gain.value = left; gr.gain.value = right;
+    src.connect(split);
+    split.connect(gl, 0); split.connect(gr, 1);
+    gl.connect(merge, 0, 0); gr.connect(merge, 0, 1);
+    merge.connect(audio.master);
   }
-  src.connect(gain); gain.connect(out); out.connect(audio.master);
   src.start();
-  audio.voices[h][slot] = { src, panner: s.is3d ? out : null, voice };
+  audio.voices[h][slot] = { src, panner, voice };
 }
 
 // the engine is left-handed (Direct3D), Web Audio right-handed: z flips
@@ -270,7 +262,7 @@ canvas.addEventListener('click', () => {
   if (ready) audioStart();
 });
 overlay.addEventListener('click', (e) => {
-  if (ready && e.target !== drop && !drop.contains(e.target)) { overlay.classList.add('hidden'); canvas.requestPointerLock(); audioStart(); }
+  if (ready) { overlay.classList.add('hidden'); canvas.requestPointerLock(); audioStart(); }
 });
 document.addEventListener('pointerlockchange', () => {
   if (!document.pointerLockElement && ready) {

@@ -396,7 +396,6 @@ sBool KKLoad2004(KDoc *doc,const sU8 *image,sInt size)
   doc->Splines.Count = nSplines;
 
   static sInt opClass[16384];
-  static sInt extraInput[16384];          // 2004 links that the source takes as inputs
   if(total > 16384) return sFALSE;
 
   for(sInt i=0;i<nOps;i++)
@@ -407,10 +406,13 @@ sBool KKLoad2004(KDoc *doc,const sU8 *image,sInt size)
     Class2004 &c = classes[ci];
     const PortThunk *t = c.Thunk;
     KOp *op = &doc->Ops[i];
+    sU32 convention = t->Convention;
+    if(c.Id == 0x11)                        // Monster: link 0 is the operator of its ranged attack
+      convention |= 0x1000;
     sSetMem(op,0,sizeof(KOp));
-    op->Init(t->Convention);
+    op->Init(convention);
     op->Command = ci;
-    op->Convention = t->Convention;
+    op->Convention = convention;
     op->InitHandler = t->InitFn;
     op->ExecHandler = t->ExecFn;
     op->InitThunk = t->Init;
@@ -418,7 +420,6 @@ sBool KKLoad2004(KDoc *doc,const sU8 *image,sInt size)
     op->OpId = i;
     op->AnimFlag = sTRUE;
     opClass[i] = ci;
-    extraInput[i] = -1;
 
     sInt max;
     if(typeByte & 0x80)
@@ -442,24 +443,11 @@ sBool KKLoad2004(KDoc *doc,const sU8 *image,sInt size)
     {
       sInt k = r.Short();
       KOp *dest = k ? &doc->Ops[k-1] : 0;
-      if(c.Id == 0x11 && in == 0)           // Monster: the 2004 link became the second input
-      {
-        if(dest) extraInput[i] = k-1;
-        continue;
-      }
       if(in < OPC_GETLINK(op->Convention))
       {
         op->SetLink(in,dest);
         if(dest) dest->AddOutput(op);
       }
-    }
-  }
-  for(sInt i=0;i<nOps;i++)
-  {
-    if(extraInput[i] >= 0)
-    {
-      doc->Ops[i].AddInput(&doc->Ops[extraInput[i]]);
-      doc->Ops[extraInput[i]].AddOutput(&doc->Ops[i]);
     }
   }
 

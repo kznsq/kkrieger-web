@@ -1,5 +1,7 @@
 web/build/
 *.o
 __pycache__/
-# the game executable is never part of the repository
+# executables stay out, except the original .kkrieger release (freeware, shipped
+# unmodified with its readme as its authors permit)
 *.exe
+!web/original/pno0001.exe

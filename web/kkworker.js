@@ -138,9 +138,9 @@ function imports() {
       sampleUses[h] = 0;
       post({ type: 'sample', handle: h, data: new Int16Array(new Int16Array(mem(), ptr, n * 2)), is3d });
     },
-    js_sample_play: (h, vol, pan, freq) => {
+    js_sample_play: (h, left, right, freq) => {
       const voice = ++sampleUses[h];
-      if (soundOn) post({ type: 'play', handle: h, voice, vol, pan });
+      if (soundOn) post({ type: 'play', handle: h, voice, left, right });
       return voice;
     },
     js_sample_3d: (h, voice, x, y, z, mn, mx) => { if (soundOn) sound3d.push([h, voice, x, y, z, mn, mx]); },

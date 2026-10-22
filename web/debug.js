@@ -57,8 +57,22 @@ const DBG = (() => {
 
   return {
     // called by the worker around each frame
-    frameStart() { if (snap) snap.done = false; if (recording !== null && recording-- === 0) { frameDraws = []; recording = null; } },
+    // frame times for n frames: game frame (kk_frame) and the time to the next frame
+    perf(n = 300) { DBG._perf = { n, game: [], gap: [], t0: 0, t1: 0 }; return 'measuring'; },
+    frameStart() {
+      const P = DBG._perf;
+      if (P) { P.t0 = performance.now(); if (P.t1) P.gap.push(P.t0 - P.t1); }
+      if (snap) snap.done = false; if (recording !== null && recording-- === 0) { frameDraws = []; recording = null; } },
     frameEnd() {
+      const P = DBG._perf;
+      if (P) {
+        P.t1 = performance.now(); P.game.push(P.t1 - P.t0);
+        if (P.game.length >= P.n) {
+          const st = (a) => { const s = a.slice().sort((x, y) => x - y); return `mean ${(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1)} p50 ${s[s.length >> 1].toFixed(1)} p95 ${s[(s.length * 0.95) | 0].toFixed(1)} max ${s[s.length - 1].toFixed(1)}`; };
+          post({ type: 'log', text: `perf: game ${st(P.game)} | gap ${st(P.gap)} ms` });
+          DBG._perf = null;
+        }
+      }
       if (DBG._lightFrame) DBG._lightFrame();
       if (frameDraws) { post({ type: 'log', text: 'frame:\n' + frameDraws.map(fmt).join('\n') }); frameDraws = null; }
       if (showRT != null && snap && snap.tex) {
@@ -90,6 +104,70 @@ const DBG = (() => {
     // keep the player's life at 100 (on) or stop doing so (off)
     god(on = true) { clearInterval(DBG._god); DBG._god = on ? setInterval(() => wasm.kk_debug_life(100), 30) : 0; return 'god ' + on; },
     show(rt, last = false) { showRT = rt; showLast = last; snap = snap || { done: false }; return 'showing ' + rt; },
+    // player position, moving cells (mode centre blocked monster) and particle groups (pos kind shot)
+    coll(max = 64) {
+      const buf = wasm.kk_alloc((3 + max * 10) * 4);
+      const n = wasm.kk_debug_coll(buf, max);
+      const f = new Float32Array(mem(), buf, 3 + max * 10);
+      const r = (k) => f[k].toFixed(2);
+      const out = ['player ' + [0, 1, 2].map(r).join(',')];
+      for (let i = 0; i < n; i++) {
+        const b = 3 + i * 10;
+        out.push(f[b] < 0 ? `part ${r(b + 1)},${r(b + 2)},${r(b + 3)} kind ${f[b + 4]} shot ${f[b + 5]} cell ${f[b + 9]}`
+                           : `cell mode ${f[b]} at ${r(b + 1)},${r(b + 2)},${r(b + 3)} blocked ${f[b + 4]} monster ${f[b + 5]}` + (f[b + 5] ? ` life ${f[b + 6]} awake ${f[b + 7]}` : ''));
+      }
+      wasm.kk_free(buf);
+      return out.join('\n');
+    },
+    cell(i) {
+      const buf = wasm.kk_alloc(64 * 4);
+      const ok = wasm.kk_debug_cell(i, buf);
+      const f = new Float32Array(mem(), buf, 64);
+      const out = ok ? ['planes ' + f[0] + ' mode ' + f[1]] : ['no cell'];
+      for (let k = 0; ok && k < f[0]; k++) out.push([0, 1, 2, 3].map((j) => f[2 + k * 4 + j].toFixed(3)).join(' '));
+      wasm.kk_free(buf);
+      return out.join('\n');
+    },
+    ray(x0, y0, z0, x1, y1, z1) {
+      const buf = wasm.kk_alloc(6 * 4);
+      const hit = wasm.kk_debug_ray(x0, y0, z0, x1, y1, z1, buf);
+      const f = new Float32Array(mem(), buf, 6);
+      const s = 'hit ' + hit + ' at ' + Array.from(f.slice(0, 3)).map((v) => v.toFixed(3)).join(',') + ' plane ' + Array.from(f.slice(3)).map((v) => v.toFixed(2)).join(',');
+      wasm.kk_free(buf);
+      return s;
+    },
+    part(g, k) {
+      const buf = wasm.kk_alloc(12 * 4);
+      const ok = wasm.kk_debug_part(g, k, buf);
+      const f = new Float32Array(mem(), buf, 12);
+      const v = (a) => [a, a + 1, a + 2].map((j) => f[j].toFixed(3)).join(',');
+      const s = ok ? `pos ${v(0)} coll ${v(3)} old ${v(6)} cell ${f[9]} kind ${f[10]} verify ${f[11]}` : 'none';
+      wasm.kk_free(buf);
+      return s;
+    },
+    sweep(x0, y0, z0, x1, y1, z1) {
+      const buf = wasm.kk_alloc(3 * 4);
+      const r = wasm.kk_debug_sweep(x0, y0, z0, x1, y1, z1, buf);
+      const f = new Float32Array(mem(), buf, 3);
+      const s = 'sweep ' + r + ' to ' + Array.from(f).map((v) => v.toFixed(3)).join(',');
+      wasm.kk_free(buf);
+      return s;
+    },
+    // every ms milliseconds for n times: particles outside the level or inside solids
+    watch(ms = 100, n = 100) {
+      const buf = wasm.kk_alloc(6 * 4);
+      let worst = 'none', bad = 0, runs = 0, total = 0;
+      const t = setInterval(() => {
+        total = wasm.kk_debug_check(buf);
+        const f = new Float32Array(mem(), buf, 6);
+        if (f[4] + f[5] > 0) { bad++; worst = `outside ${f[4]} inside ${f[5]} first ${f[0].toFixed(2)},${f[1].toFixed(2)},${f[2].toFixed(2)} kind ${f[3]}`; }
+        if (++runs >= n) { clearInterval(t); wasm.kk_free(buf); post({ type: 'log', text: `watch: ${runs} checks, ${bad} with problems, ${total} particles, last ${worst}` }); }
+      }, ms);
+      return 'watching';
+    },
+    tp(x, y, z, dir = 0) { wasm.kk_debug_teleport(x, y, z, dir); return 'teleported'; },
+    // press a key (code as kk_key takes it) and release it after ms
+    hold(key, ms) { wasm.kk_key(key); setTimeout(() => wasm.kk_key(key | 0x80000000), ms); return 'holding ' + key; },
     setup(id) { const s = KK.internals().setups[id]; return s ? s.vsSrc + '\n--- PS ---\n' + s.psSrc : 'none'; },
   };
 })();

@@ -370,9 +370,10 @@ __forceinline void sFloatDouble() {}
 __forceinline void sFloatDen1() {}
 __forceinline void sFloatDen0() {}
 
-// fistp with the FPU in round-to-nearest-even mode
-__forceinline sInt sFtol (const float f)    { return (sInt)lrintf(f); }
-__forceinline sF32 sFRound (const float f)  { return rintf(f); }
+// fistp and frndint as the 2004 player ran them: its sFloatFix loads control
+// word 0x143f (single precision, round down), so both floor
+__forceinline sInt sFtol (const float f)    { return (sInt)floorf(f); }
+__forceinline sF32 sFRound (const float f)  { return floorf(f); }
 __forceinline void sFSinCos(const float x,sF32 &sine,sF32 &cosine) { sine=(sF32)sin(x); cosine=(sF32)cos(x); }
 __forceinline sInt sMulDiv(sInt var_a,sInt var_b,sInt var_c)  { return (sInt)(((sS64)var_a*var_b)/var_c); }
 __forceinline sInt sMulShift(sInt var_a,sInt var_b)          { return (sInt)(((sS64)var_a*var_b)>>16); }

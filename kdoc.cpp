@@ -2778,11 +2778,15 @@ struct PlaySampleMem : public KInstanceMem
 
 #if sLINK_KKRIEGER
 
+extern sBool KKriegerRelease2004;             // kkriegergame.cpp
+
 void __stdcall Exec_Misc_PlaySample(KOp *op,KEnvironment *kenv,sInt sw,sInt val,sF32 tresh,sInt sample,sF32 volume,sF32 retrigger,sF32 halfrange)
 {
   PlaySampleMem *mem;
   sInt ok,buf;
   sVector v;
+  sMatrix mat;
+  sF32 vol,pan,f;
 
   mem = kenv->GetInst<PlaySampleMem>(op);
   if(mem->Reset)
@@ -2809,11 +2813,24 @@ void __stdcall Exec_Misc_PlaySample(KOp *op,KEnvironment *kenv,sInt sw,sInt val,
     if(GenOverlayManager->SoundEnable)
 #endif
     {
-      buf = sSystem->SamplePlay(sample,sFPow(10.0f,-volume/20.0f),0);
+      vol = sFPow(10.0f,-volume/20.0f);
+      pan = 0;
+      if(halfrange && KKriegerRelease2004)  // 2004: fade and pan from the position seen by the camera
+      {
+        mat = kenv->GameCam.CameraSpace;
+        mat.InvCheap4();
+        v.Rotate34(mat,kenv->ExecStack.Top().l);
+        pan = v.x/sFAbs(v.z+0.2f);
+        f = halfrange*0.5f/v.Abs3();
+        if(f>1.0f)
+          f = 1.0f;
+        vol *= f;
+      }
+      buf = sSystem->SamplePlay(sample,vol,pan);
       if(retrigger>0)
         mem->Retrigger = sFtol(retrigger*1000);
 
-      if(halfrange)
+      if(halfrange && !KKriegerRelease2004)
         mem->Buffer3D = buf;
     }
   }

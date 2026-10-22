@@ -14,12 +14,8 @@ sMAKEZONE(GamePhysic  ,"GamePhysic" ,0xff55aaff);
 sMAKEZONE(GameAI      ,"GameAI"     ,0xff77eeff);
 #endif
 
-//#define OVERLAP   (0.005f)
-//#define EPSILON   (0.0001f)
-#define EPSILON   (4.010e-3f) // determined from level size
-#define OVERLAP   (EPSILON*2)
-#define MOVE_EPSILON  (1e-6f)
-#define DOUBLECHECK 0
+#define OVERLAP   (0.005f)
+#define EPSILON   (0.0001f)
 
 #if !sPROFILE
 #define GAMEPERF(x) ;
@@ -35,7 +31,7 @@ sInt KKriegerGame::CallIntersectIn;
 
 #pragma lekktor(off)
 
-//static sInt SomethingBadHasHappened;    // collision panic
+static sInt SomethingBadHasHappened;    // collision panic
 
 /****************************************************************************/
 
@@ -77,40 +73,19 @@ void  KKriegerMesh::Copy(KObject *)
 
 void KKriegerMonster::Hit(sInt hits,KKriegerGame *game)
 {
-//  static sInt HitSounds[] = { 53,51,45,39 };
-
   if(Life>0)
   {
-    if(State==KMS_INRANGE)
-      State = KMS_ACTIVE;
+    game->ActivateMonster(this,1);
     if(hits>Armor)
       Life -= (hits-Armor)+(Armor/4);
     else
       Life -= hits/4;
-//    sDPrintF("monster hit for %d, -> %d\n",hits,Life);
     if(Life<=0)
     {
       Life = 0;
       if(KillSwitch>0)
         game->Switches[KillSwitch]++;
     }
-
-    //sSystem->SamplePlay(HitSounds[GetType()],0.6f);
-  }
-}
-
-void KKriegerMonster::Sound(sInt handle,sF32 volume)
-{
-  sVector zero;
-  sInt buf;
-
-  zero.Init(0,0,0,0);
-#if !sPLAYER
-  if(GenOverlayManager->SoundEnable)
-#endif
-  {
-    buf = sSystem->SamplePlay(handle,volume);
-    sSystem->Sample3DParam(handle,buf,Collider.Pos,zero,0.2f,160.0f);
   }
 }
 
@@ -167,22 +142,7 @@ void KKriegerPlayer::Hit(sInt hits)
   if(Life<0)
     Life = 0;
   if(hits>4)
-    Sound(10);
-}
-
-void KKriegerPlayer::Sound(sInt handle,sF32 volume)
-{
-  sVector zero;
-  sInt buf;
-
-  zero.Init(0,0,0,0);
-#if !sPLAYER
-  if(GenOverlayManager->SoundEnable)
-#endif
-  {
-    buf = sSystem->SamplePlay(handle,volume);
-    sSystem->Sample3DParam(handle,buf,Collider.Pos,zero,0.2f,160.0f);
-  }
+    sSystem->SamplePlay(10);
 }
 
 /****************************************************************************/
@@ -204,7 +164,6 @@ void KKriegerGame::Init()
   CellZone.Init(1024);
 
   Monsters.Init(64);
-  Shots.Init(64);
 
   PlayerPos.Init();
   PlayerDir = 0;
@@ -221,8 +180,8 @@ void KKriegerGame::Init()
   CamPos.Init();
   Environment = 0;
   TickCount = 0;
-  PlayerAdds = 0;
-  
+  MonsterResetTicks = 0;
+
 #if !sPLAYER
   TickPerFrame = 0;
   MaxPlanes = 0;
@@ -241,17 +200,8 @@ void KKriegerGame::Init()
   Panic();
 
   sSetMem(Switches,0,KKRIEGER_SWITCHES);
+  Switches[KGS_GAME] = KGS_GAME_INTRO;
   Switches[KGS_ONE] = 1;
-  Switches[KGS_GLARE] = 2;
-  Switches[KGS_RESOLUTION] = 1;
-  Switches[KGS_TEXTURES] = 1;
-  Switches[KGS_SHADOWS] = 1;
-  Switches[KGS_MOUSESPEED] = 5;
-  Switches[KGS_BRIGHTNESS] = 5;
-  Switches[KGS_SPECULAR] = 1;
-  WasInOptions = sFALSE;
-
-  OnOptionsChanged();
 }
 
 void KKriegerGame::Exit()
@@ -269,7 +219,6 @@ void KKriegerGame::Exit()
   CellSub.Exit();
   CellZone.Exit();
   Monsters.Exit();
-  Shots.Exit();
   WeaponEvent.Exit();
 }
 
@@ -278,10 +227,9 @@ void KKriegerGame::Flush()
   sInt i,j;
   for(i=0;i<CellAdd.Count;i++)
   {
-    CellAdd[i]->Adds.Exit(); 
-    CellAdd[i]->Subs.Exit();   
+    CellAdd[i]->Adds.Exit();
+    CellAdd[i]->Subs.Exit();
     CellAdd[i]->Zones.Exit();
-    CellAdd[i]->DeleteFaces();
     delete CellAdd[i];
   }
   for(i=0;i<CellSub.Count;i++)
@@ -300,11 +248,6 @@ void KKriegerGame::Flush()
     delete CellZone[i];
   }
 
-  for(i=0;i<Shots.Count;i++)
-  {
-    Shots[i].Exit();
-  }
-
   for(i=0;i<8;i++)
   {
     WeaponShot[i] = 0;
@@ -315,7 +258,6 @@ void KKriegerGame::Flush()
   CellAdd.Count = 0;
   CellSub.Count = 0;
   CellZone.Count = 0;
-  Shots.Count = 0;
 #if !sPLAYER
   PlayerCell = 0;
   MaxPlanes = 0;
@@ -411,73 +353,8 @@ void KKriegerGame::SetScene(GenScene *scene)
   Flush();
   mat.Init();
 
-  CellList.Init();
-  
-  SetSceneR(scene,mat,scene,0);
-#if sPLAYER
+  SetSceneR(scene,mat,scene,0);             // adds first, so that subs and zones find them
   SetSceneR(scene,mat,scene,1);
-#endif
-
-  CellConnect();
-
-#if !sPLAYER
-  sInt i,j;
-  KKriegerMonster *mon;
-
-  if(CellAdd.Count)
-  {
-    sVector globmin,globmax;
-    sF32 maxworld;
-    sInt i;
-
-    // find global min/max coord
-    globmin = CellAdd[0]->BBMin;
-    globmax = CellAdd[0]->BBMax;
-
-    for(i=0;i<CellAdd.Count;i++)
-    {
-      globmin.x = sMin(globmin.x,CellAdd[i]->BBMin.x);
-      globmin.y = sMin(globmin.y,CellAdd[i]->BBMin.y);
-      globmin.z = sMin(globmin.z,CellAdd[i]->BBMin.z);
-      globmax.x = sMax(globmax.x,CellAdd[i]->BBMax.x);
-      globmax.y = sMax(globmax.y,CellAdd[i]->BBMax.y);
-      globmax.z = sMax(globmax.z,CellAdd[i]->BBMax.z);
-    }
-
-    // find max world coordinate
-    maxworld = 0.0f;
-    maxworld = sMax<sF32>(maxworld,sFAbs(globmin.x));
-    maxworld = sMax<sF32>(maxworld,sFAbs(globmin.y));
-    maxworld = sMax<sF32>(maxworld,sFAbs(globmin.z));
-    maxworld = sMax<sF32>(maxworld,sFAbs(globmax.x));
-    maxworld = sMax<sF32>(maxworld,sFAbs(globmax.y));
-    maxworld = sMax<sF32>(maxworld,sFAbs(globmax.z));
-
-    // print world scale
-    static sF32 dynRange = 1.0f / 1048576.0f; // 2**(-20)
-
-    sDPrintF("max world coordinate is %.2f\n",maxworld);
-    if(maxworld * dynRange >= EPSILON)
-    {
-      sDPrintF("warning, kkriegergame epsilon too small!\n");
-      sDPrintF("use at least %e to guarantee ok precision.\n",maxworld * dynRange);
-    }
-  }
-
-  // this fixes 
-
-//  FlushCells
-  for(i=0;i<Monsters.Count;i++)
-  {
-    mon = Monsters.Get(i);
-    mon->Collider.Cell = FindCell(mon->Collider.Pos);
-    for(j=0;j<8;j++)
-      mon->WalkMem.FootCell[j] = mon->Collider.Cell;
-  }
-
-#endif
-
-  CellList.Exit();
 }
 
 void KKriegerGame::SetMesh(GenMesh *mesh)
@@ -488,21 +365,15 @@ void KKriegerGame::SetMesh(GenMesh *mesh)
   Flush();
   mat.Init();
 
-  CellList.Init();
-
   tempMesh = new KKriegerMesh(mesh);
-  AddMesh(tempMesh,mat,0);
+  AddMesh(tempMesh,mat,0,0);
+  AddMesh(tempMesh,mat,0,1);
   tempMesh->Release();
-
-  CellConnect();
-  CellList.Exit();
 }
 
 void KKriegerGame::SetPlayer(const sVector &p,sF32 d,sF32 l)
 {
   sInputData id;
-  sMatrix mat;
-  sVector v;
 
   sSystem->GetInput(0,id);
   LastMouseX = id.Analog[0];
@@ -512,30 +383,10 @@ void KKriegerGame::SetPlayer(const sVector &p,sF32 d,sF32 l)
   PlayerDir = d;
   PlayerLook = l;
   PlayerCell = FindCell(PlayerPos);
-  if(PlayerCell==0 && CellAdd.Count>0)
-  {
-    PlayerCell = CellAdd[0];
-    PlayerPos.Add3(CellAdd[0]->BBMin,CellAdd[0]->BBMax);
-    PlayerPos.Scale3(0.5f);
-  }
-  LastCamY = p.y;
   CamPos = p;
+  LastCamY = p.y;
 
-  Player.Collider.Pos = PlayerPos;
-  Player.Collider.Cell = PlayerCell;
-  Player.Collider.Radius = 0.5f;
-//  Player.Collider.Init(PlayerPos, PlayerCell);
-  Player.Collider.OldPos = Player.Collider.Pos;
-
-  mat.Init();
-  mat.l.Init(0,-0.25f,0,1.0f);
-  v.Init(0.75f,2.5f,0.75f,0);
-  Player.HitCell.Init(mat,v,KCM_ZONE);
-  mat.l = PlayerPos;
-  mat.l.y += 0.85f;
-  Player.HitCell.PrepareDynamic(mat);
-  
-  //  Panic();
+  Player.Body.Init(PlayerPos,PlayerCell,KPK_PLAYER);
 }
 
 /****************************************************************************/
@@ -569,23 +420,44 @@ void KKriegerGame::SetSceneR(GenScene *scene,const sMatrix &base,GenScene *usesc
 
 #if sLINK_KKRIEGER
     if(scene->CollMesh)
-    {
-      if(phase == 0)
-        AddMesh(scene->CollMesh,mat,usescene);
-      else
-      {
-#if sPLAYER
-//        scene->CollMesh->Release();
-//        scene->CollMesh = 0;
+      AddMesh(scene->CollMesh,mat,usescene,phase);
 #endif
-      }
-    }
-#endif
-  }  
+  }
 }
 
+// do two cells touch? a is an add, bv are the corners of b.
 
-void KKriegerGame::AddMesh(KKriegerMesh *mesh,const sMatrix &mat,GenScene *usescene)
+static sBool CellOverlap(KKriegerCellAdd *a,KKriegerCell *b,const sVector *bv)
+{
+  sInt i,mask,andmask,ormask;
+
+  if(a->BBMax.x<b->BBMin.x || a->BBMin.x>b->BBMax.x) return sFALSE;
+  if(a->BBMax.y<b->BBMin.y || a->BBMin.y>b->BBMax.y) return sFALSE;
+  if(a->BBMax.z<b->BBMin.z || a->BBMin.z>b->BBMax.z) return sFALSE;
+
+  andmask = 0xffff;
+  ormask = 0;
+  for(i=0;i<8;i++)
+  {
+    mask = a->OutsideMask(bv[i]);
+    andmask &= mask;
+    ormask |= mask;
+  }
+  if(andmask)                               // all of b outside one plane of a
+    return sFALSE;
+  if(ormask)
+    return sTRUE;
+
+  andmask = 0xffff;                         // b completely inside a
+  for(i=0;i<8;i++)
+    andmask &= b->OutsideMask(a->Vertices[i]);
+  return andmask==0;
+}
+
+// phase 0 creates the adds, phase 1 the subs and zones. each new cell is
+// connected to the adds it touches.
+
+void KKriegerGame::AddMesh(KKriegerMesh *mesh,const sMatrix &mat,GenScene *usescene,sInt phase)
 {
   sInt i,j,k;
   KKriegerCell *kc;
@@ -598,23 +470,24 @@ void KKriegerGame::AddMesh(KKriegerMesh *mesh,const sMatrix &mat,GenScene *usesc
   {
     mc = &mesh->Cell[j];
     mode = mc->Mode & 3;
+    if((mode==KCM_ADD) != (phase==0))
+      continue;
 
     for(k=0;k<8;k++)
       va[k].Rotate34(mat,mc->Vert[k]);
 
+    kca = 0;
     switch(mode)
     {
     default:
-#if !sINTRO
-      sVERIFYFALSE;
-#endif
     case KCM_ADD:
       kca = new KKriegerCellAdd;
       *CellAdd.Add() = kca;
       kca->Adds.Init();
       kca->Subs.Init();
       kca->Zones.Init();
-      kca->Faces = 0;
+      for(k=0;k<8;k++)
+        kca->Vertices[k] = va[k];
       kc = kca;
       break;
     case KCM_SUB:
@@ -650,126 +523,30 @@ void KKriegerGame::AddMesh(KKriegerMesh *mesh,const sMatrix &mat,GenScene *usesc
     MaxPlanes = sMax(MaxPlanes,kc->PlaneCount);
 #endif
 
-    *CellList.Add() = kc;
-  }
-}
-
-/****************************************************************************/
-
-// For heapsort in CellConnect.
-void KKriegerGame::CellSiftDown(sInt n,sInt k)
-{
-  KKriegerCell *v = CellList[k];
-  sF32 key = v->BBMin.x;
-
-  while(k < (n >> 1))
-  {
-    sInt j = k*2+1;
-    if(j+1 < n && CellList[j]->BBMin.x < CellList[j+1]->BBMin.x)
-      j++;
-
-    if(key >= CellList[j]->BBMin.x)
-      break;
-
-    CellList[k] = CellList[j];
-    k = j;
-  }
-
-  CellList[k] = v;
-}
-
-//sInt debug_count_splits;
-
-// Connect cells. Uses CellHeapSort.
-void KKriegerGame::CellConnect()
-{
-  // Heapsort the list of cells by minimum x coordinate of bbox.
-  sInt n = CellList.Count;
-  for(sInt k=n/2-1;k>=0;k--)
-    CellSiftDown(n,k);
-
-  while(--n > 0)
-  {
-    sSwap(CellList[0],CellList[n]);
-    CellSiftDown(n,0);
-  }
-
-  // Verify the resulting list is sorted
-  for(sInt i=0;i<CellList.Count-1;i++)
-    sVERIFY(CellList[i]->BBMin.x <= CellList[i+1]->BBMin.x);
-
-  // Sweep-and-prune the list, connecting cells as we identify pairs.
-  n = CellList.Count;
-  for(sInt box1=0;box1 < n;box1++)
-  {
-    KKriegerCell *cell1 = CellList[box1];
-    sInt cell1m = cell1->Mode & 3;
-    sF32 maxKey = cell1->BBMax.x;
-
-    for(sInt box2=box1+1;box2 < n && CellList[box2]->BBMin.x <= maxKey;box2++)
+    switch(mode)
     {
-      KKriegerCell *cell2 = CellList[box2];
-      sInt cell2m = cell2->Mode & 3;
-
-      if(cell1m == KCM_ADD || cell2m == KCM_ADD)
+    case KCM_SUB:
+      for(i=0;i<CellAdd.Count;i++)
+        if(CellOverlap(CellAdd[i],kc,va))
+          *CellAdd[i]->Subs.Add() = kc;
+      break;
+    case KCM_ZONE:
+      for(i=0;i<CellAdd.Count;i++)
+        if(CellOverlap(CellAdd[i],kc,va))
+          *CellAdd[i]->Zones.Add() = kc;
+      break;
+    default:
+      for(i=0;i<CellAdd.Count-1;i++)
       {
-        // BBoxes overlap in x direction, and at least one of them is an add.
-        // Check whether bboxes really intersect.
-
-        if(cell1->BBMax.z < cell2->BBMin.z || cell1->BBMin.z > cell2->BBMax.z)
-          continue;
-
-        if(cell1->BBMax.y < cell2->BBMin.y || cell1->BBMin.y > cell2->BBMax.y)
-          continue;
-
-        // We have actual overlap (of bboxes atleast). Now connect.
-        if(cell1m == KCM_ADD && cell2m == KCM_ADD)
+        if(CellOverlap(CellAdd[i],kca,va))
         {
-          // Adds need to link to each other, so this is a special case.
-          KKriegerCellAdd *c1a = (KKriegerCellAdd *) cell1;
-          KKriegerCellAdd *c2a = (KKriegerCellAdd *) cell2;
-
-          *c1a->Adds.Add() = c2a;
-          *c2a->Adds.Add() = c1a;
-        }
-        else // only is one add
-        {
-          KKriegerCellAdd *cella; // add cell
-          KKriegerCell *cello; // other cell
-          sInt type;
-
-          if(cell1m == KCM_ADD) // first is add
-          {
-            cella = (KKriegerCellAdd *) cell1;
-            cello = cell2;
-            type = cell2m;
-          }
-          else // second is add
-          {
-            cella = (KKriegerCellAdd *) cell2;
-            cello = cell1;
-            type = cell1m;
-          }
-
-          if(type == KCM_SUB)
-            *cella->Subs.Add() = cello;
-          else if(type == KCM_ZONE)
-            *cella->Zones.Add() = cello;
+          *CellAdd[i]->Adds.Add() = kca;
+          *kca->Adds.Add() = CellAdd[i];
         }
       }
+      break;
     }
   }
-
-  // now generate the collision geometrie of the adds
-//  sInt time = sSystem->GetTime();
-  for(sInt i = 0; i < CellAdd.Count; i++)
-  {
-//    debug_count_splits = 0;
-    CreateCollisionFaces(*CellAdd[i]);
-//    sDPrintF("(%2d)%5d ",CellAdd[i]->Adds.Count,debug_count_splits);
-//    if(!(i%15)) sDPrintF("\n");
-  }
-//  sDPrintF("Create it all %d\n",sSystem->GetTime()-time);
 }
 
 /****************************************************************************/
@@ -791,8 +568,8 @@ sBool KKriegerGame::OnKey(sU32 key)
     if(OnGround && JumpTimer==0)
     {
       SpeedUp = JumpForce;
-      PlayerSound(4,0.9f);
-      JumpTimer = 10;
+      sSystem->SamplePlay(4,0.9f);
+      JumpTimer = 100;
     }
     break;
   case 'k':
@@ -804,13 +581,11 @@ sBool KKriegerGame::OnKey(sU32 key)
   case 'I':
     Switches[KGS_GAME] = KGS_GAME_INTRO;
     break;
-#endif
   case 'r':
   case 'R':
-#if !sPLAYER
     Restart();
-#endif
     break;
+#endif
   case 'w':
   case 'W':
     AccelForw = AccelForwFactor;
@@ -911,27 +686,7 @@ sBool KKriegerGame::OnKey(sU32 key)
 void KKriegerGame::AddEvents(KEnvironment *kenv)
 {
   sInt i;
-  KKriegerShot *shot;
   KKriegerCell *cell;
-
-
-  for(i=0;i<Shots.Count;)
-  {
-    shot = &Shots[i];
-    if(shot->Event->Select)
-    {
-      Shots[i] = Shots[--Shots.Count];
-    }
-    else
-    {
-      i++;
-      if(shot->Mode!=0)
-      {
-        shot->Event->Matrix = shot->Matrix;
-        kenv->AddStaticEvent(shot->Event);
-      }
-    }
-  }
 
   for(i=0;i<CellZone.Count;i++)
   {
@@ -1009,21 +764,16 @@ void KKriegerGame::Restart()
   sInt i;
 
   ResetByOp = 1;
+  for(i=0;i<CellZone.Count;i++)
+    CellZone[i]->Respawn = 0;
 
   SetPlayer(PlayerStartPos,0,0);
-//  RespawnAt(1);
   LastCamY = PlayerPos.y;
   CamPos = PlayerPos;
 
-  for(i=0;i<Monsters.Count;i++)
-    Monsters[i]->State = KMS_RESPAWN;
-
-  for(i=0;i<CellZone.Count;i++)
-    CellZone[i]->DoRespawn();
-
-  sSetMem(Switches+16,0,KKRIEGER_SWITCHES-16);
-
-  //  Panic();    
+  sSetMem(Switches+2,0,KKRIEGER_SWITCHES-2);
+  Switches[KGS_GAME] = KGS_GAME_RUN;
+  MonsterResetTicks = 2;
 }
 
 void KKriegerGame::Continue()
@@ -1035,9 +785,6 @@ void KKriegerGame::Continue()
     if(Switches[KGS_RESPAWN+i] && Respawn[i].Valid)
       SetPlayer(Respawn[i].Pos,Respawn[i].Dir,0);
   }
-  for(i=0;i<Monsters.Count;i++)
-    if(Monsters[i]->Life>0)
-      Monsters[i]->State = KMS_RESPAWN;
 
   Player.Life = 100;
   if(Player.Ammo[0]<200)
@@ -1048,7 +795,6 @@ sInt KKriegerGame::SplashCalc(const sVector &pos,KKriegerCellAdd *cell)
 {
   sVector v,p1;
   sF32 dist;
-  KKriegerCollideInfo ci;
 
   v.Sub3(pos,SplashPos);
   dist = v.Abs3();
@@ -1056,8 +802,7 @@ sInt KKriegerGame::SplashCalc(const sVector &pos,KKriegerCellAdd *cell)
   {
     p1 = pos;
     p1.y += 0.5f;
-    ci.Init();
-    if(cell==0 || !CollideRay(cell,p1,SplashPos,ci))
+    if(cell==0 || !FindFirstIntersect(SplashPos,p1,cell))
     {
       dist = 1-(dist/SplashRange);
       return SplashHits*dist;
@@ -1066,143 +811,41 @@ sInt KKriegerGame::SplashCalc(const sVector &pos,KKriegerCellAdd *cell)
   return 0;
 }
 
-struct ShotInfo
-{
-  sInt Mode;                // 0=off, 1=point, 2=cube
-  sF32 Speed;               // shot initial speed
-  sF32 rx,ry,rz;            // initial rotation
-  sF32 px,py,pz;            // initial position
-  sF32 sx,sy,sz;            // "cube" size (for physic)
-};
-
-ShotInfo ShotInfoTable[8] =  // shot0..7 player, shot 8..11 monster
-{
-  { 1,0.250f  ,  -0.020f,0,0  ,  0.575f,-0.250f,1.250f },                  // shotgun
-  { 1,0.200f  ,  -0.020f,0,0  ,  0.585f,-0.430f,1.250f },                  // automatic gun
-  { 1,0.1177f ,  -0.020f,0,0  ,  0.410f,-0.135f,1.275f },                  // zapper
-  { 0 },
-  { 2,0.100f  ,  -0.020f,0,0  ,  0.505f,-0.135f,1.625f ,  0.5,0.5,0.5 },   // light bomb
-  { 1,0.250f  ,   0     ,0,0  ,  0.000f, 1.500f,1.000f },                  // killerbug
-  { 2,0.100f  ,  -0.020f,0,0  ,  0.505f,-0.135f,1.625f ,  0.5,0.5,0.5 },   // shadow bomb
-  { 1,0.250f  ,   0     ,0,0  ,  0.000f, 1.935f,1.000f },                  // ultimate bot
-};
-
-void KKriegerGame::FireShot(KEnvironment *kenv,sInt weapon,KKriegerMonster *monster,const sVector *monsterfiredir)
-{
-  KKriegerShot *shot;
-  ShotInfo *info;
-//  sInt i;
-  sMatrix mat;
-//  sVector v;
-  sVector speed;
-  sVector scale;
-  KKriegerCellDynamic *skipcell;
-
-  
-  sVERIFY(weapon>=0 && weapon<8);
-  info = &ShotInfoTable[weapon];
-  if(info->Mode==0) return;
-
-  shot = Shots.Add();
-  sSetMem(shot,0,sizeof(*shot));
-
-  shot->Mode = info->Mode;
-  shot->Tensor.Init(0,0,0,0);
-  shot->Weapon = weapon;
-  shot->Event = new KEvent;
-  shot->Event->Init();
-  shot->Event->Active = 0;
-  shot->Matrix.Init();
-  shot->DoubleKill = 0;
-
-  if(monster)
-  {
-//    mat = monster->Matrix;
-    mat.InitDir(*monsterfiredir);
-    mat.l = monster->Collider.Pos;
-    mat.l.y += 0.75f;
-//    v.Init(info->px,info->py,info->pz);
-//    v.Rotate3(mat);
-//    mat.l.Add3(v);
-    skipcell = 0;
-    shot->Who = KCRF_ISMONSTER;
-    shot->Cell = monster->Collider.Cell;
-  }
-  else
-  {
-    mat.InitEuler(PlayerLook+info->rx*sPI2F,PlayerDir,0);
-    mat.l.x = info->px;
-    mat.l.y = info->py;
-    mat.l.z = info->pz;
-    mat.l.Rotate3(mat);
-    mat.l.x += PlayerPos.x;
-    mat.l.y += LastCamY+CamOffset;
-    mat.l.z += PlayerPos.z;
-
-    skipcell = &kenv->Game->Player.HitCell;
-    shot->Who = KCRF_ISPLAYER;
-    shot->Cell = kenv->Game->PlayerCell;
-  }
-
-  speed = mat.k;
-  speed.Scale4(info->Speed);
-  scale.Init(0.5f,0.5f,0.5f);
-
-  shot->Event->Matrix = mat;
-  shot->Matrix.l = mat.l;
-  shot->OldPos.Sub4(shot->Matrix.l,speed);
-
-  if(info->Mode==2)
-  {
-    shot->Tensor.InitRnd();
-    shot->Tensor.Scale3(0.01f);
-    shot->Tensor.w = 0;
-  }
-
-  shot->Event->Op = WeaponShot[weapon];
-  shot->Event->Monster = monster;
-}
-
-extern "C" int __cdecl wsprintfA(sChar *buffer,const sChar *format,...);
-extern "C" void __stdcall OutputDebugStringA(const sChar *str);
+/****************************************************************************/
 
 void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
 {
   sInputData id;
   sInt time;
-  sF32 d;
-  sVector speed;
-  sInt i;
+  sF32 d,testh,dist;
+  sVector speed,dir,plane,p0,p1;
+  sInt i,sl;
   KKriegerMonster *mon;
-  sInt sl;
-  sBool inOptions;
-  sF32 f;
-  KKriegerCollideInfo ci;
-
-  inOptions = Switches[KGS_GAME] == KGS_GAME_OPTIONS
-    || Switches[KGS_GAME] == KGS_GAME_INGAME && Switches[KGS_INGAME_MENU] == 1;
-
-  if(WasInOptions && !inOptions)
-    OnOptionsChanged();
-
-  WasInOptions = inOptions;
+  KKriegerParticle *part;
+  KKriegerCellAdd *cell;
+  KEvent *event;
 
   // check if everything is safe.
 
-  if(PlayerCell==0 || Switches[KGS_GAME]!=KGS_GAME_RUN)
+  if(PlayerCell==0 || Player.Body.Part[0].Cell==0)
     return;
 
   TickCount += slices;
 
-//  sDPrintF("slices %d\n",slices);
+  switch(Switches[KGS_GAME])
+  {
+  case KGS_GAME_RUN:
+    break;
+  case KGS_GAME_RESTART:
+    Restart();
+    return;
+  default:
+    return;
+  }
 
   // get mouse looking
 
   Environment = kenv;
-
-#if DOUBLECHECK
-  slices = 1;
-#endif
 
 #if !sPLAYER
   TickPerFrame = slices;
@@ -1212,10 +855,8 @@ void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
   sSystem->GetInput(0,id);
   if(time<1000)
   {
-    f = MouseTurnSpeed*(Switches[KGS_MOUSESPEED]+2)/7;
-    PlayerDir  += (id.Analog[0] - LastMouseX)*f;
-    f = MouseLookSpeed*(Switches[KGS_MOUSESPEED]+2)/7*(-Switches[KGS_MOUSEINVERT]*2+1);
-    PlayerLook += (id.Analog[1] - LastMouseY)*f;
+    PlayerDir  += (id.Analog[0] - LastMouseX)*MouseTurnSpeed;
+    PlayerLook += (id.Analog[1] - LastMouseY)*MouseLookSpeed;
     PlayerLook = sRange<sF32>(PlayerLook,sPIF/2,-sPIF/2);
   }
   LastMouseX = id.Analog[0];
@@ -1227,7 +868,7 @@ void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
   if(Player.NextWeapon!=Player.CurrentWeapon)
   {
     if(WeaponTimer<0.75f)
-      WeaponTimer += slices*0.01f*5;
+      WeaponTimer += slices*0.05f;
     WeaponTimer += slices*0.01f;
   }
   else
@@ -1259,53 +900,57 @@ void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
   }
 
   // player step
+
   if(AccelForw || AccelSide)
   {
     StepTimer+=slices*0.01f;
-    if(StepTimer>0.5f && OnGround) // issue player step
+    if(StepTimer>0.5f)
     {
       StepTimer -= 0.5f;
       StepFoot = 1-StepFoot;
-      PlayerSound(StepFoot,0.8f);
+      sSystem->SamplePlay(StepFoot,0.8f);
     }
   }
 
   // splash damage
 
   if(SplashEnable)
-  {    
-    KKriegerCellAdd *cell;
-
+  {
     cell = FindCell(SplashPos);
 
     for(i=0;i<Monsters.Count;i++)
     {
-      mon = kenv->Game->Monsters.Get(i);
-      mon->Hit(SplashCalc(mon->Collider.Pos,cell),this);
+      mon = Monsters[i];
+      mon->Hit(SplashCalc(mon->Matrix.l,cell),this);
     }
     SplashHits = SplashHits/2;
     Player.Hit(SplashCalc(PlayerPos,cell));
     SplashEnable = 0;
   }
 
-  // fire?
+  // fire? the shot operator makes the projectile from the event
 
   if(Player.FireKey)
   {
-    if(!Player.Ammo[Player.CurrentWeapon/2] && Player.CurrentWeapon!=0)
-      PlayerSound(15,0.8f);
+    if(!Player.Ammo[Player.CurrentWeapon/2])
+      sSystem->SamplePlay(15,0.8f);
 
-    if((Player.Ammo[Player.CurrentWeapon/2]>0 || Player.CurrentWeapon==0) && Player.CurrentWeapon==Player.NextWeapon && Player.CoolTimer<=0 && WeaponTimer>=0.25f)
+    if(Player.Ammo[Player.CurrentWeapon/2]>0 && Player.CurrentWeapon==Player.NextWeapon && Player.CoolTimer<=0 && WeaponTimer>=0.25f)
     {
-      if(Player.CurrentWeapon!=0)
-        Player.Ammo[Player.CurrentWeapon/2]--;
+      Player.Ammo[Player.CurrentWeapon/2]--;
       Player.CoolTimer = WeaponCool[Player.CurrentWeapon];
       if(!(WeaponFlags[Player.CurrentWeapon]&KWF_CONTINUOUS))
         Player.FireKey = 0;
 
       if(WeaponShot[Player.CurrentWeapon])
       {
-        FireShot(kenv,Player.CurrentWeapon,0,0);
+        event = new KEvent;
+        event->Init();
+        event->Rotate.Init(PlayerLook*0.159155f,PlayerDir*0.159155f,0,0);
+        event->Translate = PlayerPos;
+        event->Translate.y = LastCamY+CamOffset;
+        event->Op = WeaponShot[Player.CurrentWeapon];
+        kenv->AddDynamicEvent(event);
       }
       if(!(WeaponFlags[Player.CurrentWeapon]&KWF_CONTINUOUS))
         Player.FireKey = 0;
@@ -1314,139 +959,98 @@ void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
   if(Player.CoolTimer>=0)
     Player.CoolTimer -= slices*0.01f;
 
+  // particles moved by operators keep their speed
+
+  for(i=0;i<PartUsed;i++)
+  {
+    for(part=PartPtr[i];;part++)
+    {
+      if(part->UseNewPos)
+      {
+        speed.Sub3(part->Pos,part->OldPos);
+        speed.Scale3(slices);
+        speed.Add3(part->Pos);
+        speed.Sub3(part->NewPos);
+        part->OldPos.AddScale3(speed,1.0f/slices);
+        part->UseNewPos = 0;
+      }
+      if(part->EndMarker)
+        break;
+    }
+  }
+
   // the timesliced-loop ...
 
   for(sl=0;sl<slices;sl++)
   {
-    sInt upforce;
     // find height
 
     if(JumpTimer>0)
       JumpTimer--;
 
-    sF32 testh = StairHeight + GravityPlayer + Player.Collider.Radius;
+    testh = GravityPlayer+StairHeight;
     d = testh;
-    if(Player.Collider.Cell)
+    if(Player.Body.Part[0].Cell)
     {
-      sVector p0,p1;
-      KKriegerCellAdd *cell;
-
-      ci.Init(0,KCRF_ISPLAYER);
-      p0 = Player.Collider.Pos;//part->Pos;
-      p1 = p0; 
+      p0 = Player.Body.Part[0].Pos;
+      p1 = p0;
       p1.y -= testh;
-      cell = Player.Collider.Cell;    // cell might get changed by CollideRay!
-        
-      if(CollideRay(cell,p1,p0,ci))
-        d += ci.Dist;
+      Player.Body.HitCell.Mode |= KCM_DISABLED;
+      cell = PlayerCell;
+      dir.Init(0,-1,0,0);
+      if(FindFirstIntersect(dir,p1,p0,cell,plane,dist,0,0))
+        d += dist;
+      Player.Body.HitCell.Mode &= ~KCM_DISABLED;
     }
 
     // move player
 
-    speed.Init();
-    speed.Sub4(Player.Collider.Pos,Player.Collider.OldPos);
-    speed.Scale3(1.0f-(OnGround?DampPlayerGround:DampPlayerAir));
-
+    speed.Init(0,0,0,0);
     speed.AddScale3(PlayerMat.i,AccelSide);
     speed.AddScale3(PlayerMat.k,AccelForw);
     speed.y += SpeedUp;
-    SpeedUp = 0;
     OnGround = 0;
+    SpeedUp = 0;
 
-
-    upforce = 0;
-    if(d<testh)
+    if(testh>d)
     {
-      if(OffGroundTime >= 0.4f) // player was flying, issue "land" sample
+      if(OffGroundTime>=0.4f)   // player was flying, issue "land" sample
       {
-        PlayerSound(5);
+        sSystem->SamplePlay(5);
         StepFoot = 0;
         StepTimer = 0;
       }
-
       OnGround = 1;
+      speed.y += (StairHeight-GravityPlayer-d)*DampPlayerHeight+GravityPlayer;
       OffGroundTime = 0.0f;
-
-      upforce += (testh-d)*0.1f;
     }
     else
     {
       OffGroundTime += slices*0.01f;
-      speed.y -= GravityPlayer;
     }
+    Player.Body.Part[0].Control(speed);
 
-//    sDPrintF("speed %f pos %f dist %f Ground %d %08x\n",speed.y,Player.Collider.Pos.y,d,OnGround,Player.Collider.Cell);
-
-//    upforce = 0; speed.y-=GravityPlayer; // slide on the ground
-    Player.Collider.OldPos = Player.Collider.Pos;
-    Player.Collider.OldPos.y += upforce;
-    speed.y += upforce;
-    MoveCollider(Player.Collider,speed,KCRF_ISPLAYER);
-
-    PlayerPos = Player.Collider.Pos;
-    if(Player.Collider.Cell)
-      PlayerCell = Player.Collider.Cell;
-
-    Player.HitCell.Matrix1.InitEuler(0,PlayerDir,0);
-    Player.HitCell.Matrix1.l = PlayerPos;
-    Player.HitCell.Matrix1.l.y += 0.85f;
-    Player.HitCell.Matrix0.l = Player.HitCell.Matrix1.l;
-
+    Player.Body.HitCell.Matrix1.InitEuler(0,PlayerDir,0);
+    Player.Body.HitCell.Matrix1.l = PlayerPos;
+    Player.Body.HitCell.Matrix1.l.y += 0.85f;
+    Player.Body.HitCell.Matrix0.l = Player.Body.HitCell.Matrix1.l;
 
     // slice
 
     Physic((sl+1.0f)/slices);
+    PlayerPos = Player.Body.Part[0].Pos;
     Zones(kenv);
 
     // cam
 
-    LastCamY = sFade(LastCamY,PlayerPos.y,DampPlayerCam);
+    LastCamY = (PlayerPos.y-LastCamY)*DampPlayerCam+LastCamY;
     CamPos = PlayerPos;
-    CamPos.y = LastCamY;
-    CamPos.y += CamOffset;
-
-    // 3d sound listener
-    speed.Scale3(1000.0f / time);
-    sSystem->Sample3DListener(CamPos,speed,PlayerMat.j,PlayerMat.k);
+    CamPos.y = LastCamY+CamOffset;
 
     // AI
 
-    {
-      sBool prev;
-      sBool mach;
-
-      prev = 0;
-      mach = 0;
-    #if sPROFILE
-      sZONE(GameAI);
-    #endif
-  
-      MonsterMagnetAI();
-
-      for(i=0;i<Monsters.Count;i++)
-      {
-        mon = Monsters[i];
-        MonsterAI(mon,kenv,mach,prev);
-        prev = mon->Life>0;
-        if(mon->Flags&KMF_MACHINE)
-        {
-          mach = prev;
-          prev = 0;         // HACK: first monster from machine spawns even with KMF_WHENPREVDEAD set. makes editing simpler.
-        }
-      }
-    }
-
-    for(i=0;i<Shots.Count;)
-    {
-      if(ShotAI(&Shots[i]))
-        i++;                                // shot is ok
-      else
-      {
-        Shots[i].Exit();
-        Shots[i] = Shots[--Shots.Count];    // shot has ended
-      }
-    }
-
+    for(i=0;i<Monsters.Count;i++)
+      MonsterAI(Monsters[i],kenv);
 
     Player.UseKey = 0;
 
@@ -1454,15 +1058,9 @@ void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
 
     if(PlayerCell==0 || PlayerCell->OutsideMask(PlayerPos)!=0)
     {
-      KKriegerCellAdd *cell;
       cell = FindCell(PlayerPos);
       if(cell!=0)
-      {
         PlayerCell = cell;
-#if LOGGING
-        sDPrintF("KKriegerGame::OnTick() corrected player pos\n");
-#endif
-      }
     }
   }
 
@@ -1472,36 +1070,21 @@ void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
     if(!DCellPtr[i]->Blocked)
       DCellPtr[i]->Matrix0 = DCellPtr[i]->Matrix1;
 
+  // 3d sound listener for the sample operators
+
+  speed.Sub3(Player.Body.Part[0].Pos,Player.Body.Part[0].OldPos);
+  speed.Scale3(100.0f);
+  sSystem->Sample3DListener(CamPos,speed,PlayerMat.j,PlayerMat.k);
 
   Environment = 0;
 
   // check death of player
 
   if(Player.Life==0 && Switches[KGS_GAME]==KGS_GAME_RUN)
-  {
-    //Switches[KGS_GAME] = KGS_GAME_LOST;
     Continue();
-  }
 
-// diagnostics
-
-#if !sPLAYER
-  {
-    sInt i;
-    KKriegerCellAdd *cell,*test;
-
-    cell = PlayerCell;
-    PlayerAdds = 1;
-    for(i=0;i<cell->Adds.Count;i++)
-    {
-      test = cell->Adds.Get(i);
-      if(test->OutsideMask(PlayerPos,0)==0)
-        PlayerAdds++;
-    }
-  }
-
-#endif
-
+  if(MonsterResetTicks>0)
+    MonsterResetTicks--;
 }
 
 /****************************************************************************/
@@ -1511,7 +1094,7 @@ void KKriegerGame::OnTick(KEnvironment *kenv,sInt slices)
 void KKriegerGame::Zones(KEnvironment *kenv)
 {
   sInt *valp;
-  sInt i,action,out;
+  sInt i,j,action,out;
   KKriegerCell *cell;
   KKriegerCellDynamic *dcell;
 
@@ -1526,12 +1109,11 @@ void KKriegerGame::Zones(KEnvironment *kenv)
 
     // respawn
 
-    if(cell->Respawn>0 && cell->Respawn<0x40000000)
+    if(cell->Respawn>=0 && cell->Respawn<0x40000000)
     {
-      if(cell->Respawn<=10)
-        cell->DoRespawn();
-      else
-        cell->Respawn -= 10;
+      cell->Respawn -= 10;
+      if(cell->Respawn<0)
+        cell->Respawn = 0;
     }
 
     // logic
@@ -1608,43 +1190,43 @@ void KKriegerGame::Zones(KEnvironment *kenv)
       switch(cell->Logic.Code&0x0f)
       {
       case KKEC_ENABLESWITCH:
-        if(action) 
+        if(action)
           Switches[cell->Logic.Output] = 1;
         break;
       case KKEC_DISABLESWITCH:
-        if(action) 
+        if(action)
           Switches[cell->Logic.Output] = 0;
         break;
       case KKEC_TOGGLESWITCH:
-        if(action) 
+        if(action)
           Switches[cell->Logic.Output] = !Switches[cell->Logic.Output];
         break;
       case KKEC_SETSWITCH:
         Switches[cell->Logic.Output] = action;
         break;
       case KKEC_SETVALUE:
-        if(action) 
+        if(action)
           *valp = cell->Logic.Value;
         break;
       case KKEC_MAXVALUE:
-        if(action) 
+        if(action)
           *valp = sMax<sInt>(*valp,cell->Logic.Value);
         break;
       case KKEC_MINVALUE:
-        if(action) 
+        if(action)
           *valp = sMin<sInt>(*valp,cell->Logic.Value);
         break;
       case KKEC_INCVALUE:
-        if(action) 
+        if(action)
         {
           out = cell->Logic.Output&15;
-          if(/*(&Player.Life)[out]==0 &&*/ out>=8) // always collect weapon, auch wenn man die waffe schon besitzt
+          if((&Player.Life)[out]==0 && out>=8)    // switch to a weapon when it is picked up the first time
             Player.NextWeapon = out-8;
           *valp = sMin<sInt>(*valp+cell->Logic.Value,(&Player.LifeMax)[out]);
         }
         break;
       case KKEC_DECVALUE:
-        if(action) 
+        if(action)
           *valp = sMax<sInt>(*valp-cell->Logic.Value,0);
         break;
 
@@ -1666,11 +1248,21 @@ void KKriegerGame::Zones(KEnvironment *kenv)
     cell->Collided = 0;
   }
 
-  // reset cell enter/leave info
+  // shots that touched a hit cell
+
+  for(j=0;j<KKRIEGER_WEAPONKIND;j++)
+    if((Player.Body.HitCell.Enter|Player.Body.HitCell.Collided) & (1<<(KPK_WEAPON0+j)))
+      Player.Hit(WeaponHits[j]);
 
   for(i=0;i<DCellUsed;i++)
   {
     dcell = DCellPtr[i];
+    if(dcell->Monster)
+    {
+      for(j=0;j<KKRIEGER_WEAPONKIND;j++)
+        if((dcell->Enter|dcell->Collided) & (1<<(KPK_WEAPON0+j)))
+          dcell->Monster->Hit(WeaponHits[j],this);
+    }
 
     dcell->Enter = 0;
     dcell->Leave = 0;
@@ -1685,7 +1277,7 @@ void KKriegerGame::RespawnAt(sInt i)
   if(Respawn[i].Valid || i==1)
   {
     SetPlayer(Respawn[i].Pos,Respawn[i].Dir,0);
-    PlayerSound(11);
+    sSystem->SamplePlay(11);
   }
 }
 
@@ -1712,35 +1304,6 @@ void KKriegerGame::OnPaint(sMaterialEnv *env)
 #endif
 }
 
-/****************************************************************************/
-
-void KKriegerGame::OnOptionsChanged()
-{
-  // update engine usage mask using "shadows" switch
-  sU32 usageMask = ~0U & ~(1<<ENGU_SHADOW);
-
-  if(Switches[KGS_SHADOWS])
-    usageMask |= 1<<ENGU_SHADOW;
-
-  Engine->SetUsageMask(usageMask);
-
-  // update resolution if necessary
-  static const sInt xRes[] = { 640,800,1024,1280 };
-  static const sInt yRes[] = { 480,600, 768,1024 };
-  sInt res = Switches[KGS_RESOLUTION];
-
-#if sPLAYER
-  if(xRes[res] != sSystem->ConfigX) // resolution changed?
-  {
-    sSystem->ConfigX = xRes[res];
-    sSystem->ConfigY = yRes[res];
-
-    sSystem->InitScreens();
-  }
-#endif
-}
-
-/****************************************************************************/
 /****************************************************************************/
 
 void KKriegerGame::GetCamera(sMaterialEnv &env)
@@ -1770,604 +1333,82 @@ void KKriegerGame::GetPlayer(sMatrix &m)
 
 /****************************************************************************/
 /***                                                                      ***/
-/***   Sound                                                              ***/
-/***                                                                      ***/
-/****************************************************************************/
-
-void KKriegerGame::PlayerSound(sInt sound,sF32 volume)
-{
-  sInt buf;
-  sVector zero;
-
-  zero.Init(0,0,0,0);
-#if !sPLAYER
-  if(GenOverlayManager->SoundEnable)
-#endif
-  {
-    buf = sSystem->SamplePlay(sound,volume);
-    sSystem->Sample3DParam(sound,buf,PlayerPos,zero,0.2f,1.0f);
-  }
-}
-
-/****************************************************************************/
-/***                                                                      ***/
 /***   Game Logic                                                         ***/
 /***                                                                      ***/
 /****************************************************************************/
 
+// a monster only wakes up where its body is inside the world
 
-struct KKMonsterWalkInfo
+void KKriegerGame::ActivateMonster(KKriegerMonster *mon,sInt active)
 {
-  sU32 Flags;
-  sInt FootCount;
-  sF32 StepTresh,RunLowTresh,RunHighTresh;
-  sF32 scanup,scandown;
-  sInt fgw;
-  sF32 slw,ssw,snw;
-  sInt fgr;
-  sF32 slr,ssr,snr;
-  sF323 LegPos[8];
-};
-
-KKMonsterWalkInfo KKMonsterWalkInfoTable[5] =
-{
-  { // robospider
-    2,3,0.150f,0.750f,1.250f,2.000f,2.000f,
-    3,0.870f,0.390f,0.500f,
-    3,1.250f,0.290f,0.350f,
-    {
-      { -0.500f,0.125f,0.000f },
-      {  0.500f,0.125f,0.000f },
-      {  0.000f,0.205f,0.750f },
-    }
-  },
-  { // killerbug
-    2,6,0.150f,0.750f,1.250f,2.000f,2.000f,
-    6,1.255f,0.320f,0.545f,
-    6,2.160f,0.155f,0.210f,
-    {
-      { -1.125f,0,0 },
-      {  1.125f,0,0 },
-      { -0.625f,0,0 },
-      {  0.625f,0,0 },
-      { -1.000f,0,-0.125f },
-      {  1.000f,0,-0.125f },
-    }
-  },
-  { // hellbug
-    2,4,0.150f,0.750f,1.250f,2.000f,2.000f,
-    4,1.130f,0.270f,0.510f,
-    4,2.160f,0.170f,0.260f,
-    {
-      { -0.600f,0.250f, 0.500f },
-      {  0.600f,0.250f, 0.500f },
-      { -0.450f,0.030f,-0.860f },
-      {  0.450f,0.030f,-0.875f },
-    }
-  },
-  { // ultimate bot
-    2,2,0.150f,1.750f,1.250f,2.000f,2.000f,
-    2,0.505f,0.920f,1.125f,
-    2,1.470f,0.800f,0.960f,
-    {
-      { -0.800f,0.125f,0 },
-      {  0.800f,0.125f,0 },
-    }
-  },
-  { // no walking (spawn machines)
-    2,2,0.150f,1.750f,1.250f,2.000f,2.000f,
-    2,0.505f,0.920f,1.125f,
-    2,1.470f,0.800f,0.960f,
-    {
-      { -0.800f,0.125f,0 },
-      {  0.800f,0.125f,0 },
-    }
-  }
-};
-
-void KKMonsterWalk(KEnvironment *kenv,KKMonsterWalkMem *mem,KKMonsterWalkInfo *wi,KSpline *stepspline,sMatrix &matrix,KKriegerCellAdd *moncell)
-{
-  sMatrix mat;//,save;               // local vars
-  sMatrix dir;                    // desired orientation of walker
-  sVector v,sum,foot[8],spline[8],stepdir;
-  sInt i,j;
-  sInt bestleg;
-  sInt time;
-  sF32 dist,f,t;
-  sInt changestate;
   KKriegerCellAdd *cell;
-  KKriegerCollideInfo ci;
-  sVector p0,p1;
+  sInt i;
 
-  // copy of instance-vars
-
-  sInt State;
-  sInt LastLeg;
-  sInt NextLeg;
-
-  // parameters
-
-  sInt FootGroup[2];              // groups of feet.
-  sF32 StepLength[2];             // max. length of a step
-  sInt StepSpeed[2];              // duration of a step in ms.
-  sInt StepNext[2];               // when to start the next step in ms. steps may overlap
-
-  // init parameters
-
-  FootGroup[0] = wi->fgw;
-  FootGroup[1] = wi->fgr;
-  StepLength[0] = wi->slw;
-  StepLength[1] = wi->slr;
-  StepSpeed[0] = sFtol(wi->ssw*1000);
-  StepSpeed[1] = sFtol(wi->ssr*1000);
-  StepNext[0] = sMin(sFtol(wi->snw*1000),StepSpeed[0]);
-  StepNext[1] = sMin(sFtol(wi->snr*1000),StepSpeed[1]);
-
-// init instance storage
-
-  if(mem->Reset || kenv->TimeReset)
+  if(active && mon->State==KMS_ASLEEP)
   {
-    mem->Reset = 0;
-    sum.Init();
-    mem->FootCenter.Init();
-    mem->InitSteps = wi->FootCount*2;
-    for(i=0;i<wi->FootCount;i++)
+    cell = FindCell(mon->Body.Part[0].Pos);
+    if(cell)
     {
-      mem->FootDelta[i].Init(wi->LegPos[i].x,wi->LegPos[i].y,wi->LegPos[i].z,1);
-      p0.Rotate4(matrix,mem->FootDelta[i]);
-      p0.w = 1;
-      p1 = p0;
-      p1.y -= 2.0f;
-      ci.Init();
-      v = p0;
-      cell = moncell;
-      if(cell && kenv->Game->CollideRay(cell,p1,p0,ci))
-        v = ci.Pos;
-      v.w = 0;
-      mem->FootOld[i] = mem->FootNew[i] = v;
-      mem->StepTime[i] = StepSpeed[0];
-      mem->FootCell[i] = cell;
-      mem->FootCenter.x += mem->FootDelta[i].x/wi->FootCount;
-      mem->FootCenter.z += mem->FootDelta[i].z/wi->FootCount;
-    }
-    mem->LastTime = kenv->CurrentTime;
-    mem->NewPos = matrix.l;
-    mem->State = 0;
-    mem->LastLeg = 0;
-    for(i=0;i<wi->FootCount;i++)
-      mem->FootDelta[i].Sub3(mem->FootCenter);
-  }
-
-  State = mem->State;
-  LastLeg = mem->LastLeg;
-  NextLeg = mem->NextLeg;
-
-
-  // animate
-
-  sum.Init();
-  f = 0;
-  for(i=0;i<wi->FootCount;i++)          
-  {
-    t = sRange(1.0f*mem->StepTime[i]/StepSpeed[State],1.0f,0.0f);
-    if(i<FootGroup[State])
-    {
-      f += t;
-    }
-    if(stepspline)
-    {
-      stepspline->Eval((t+State)*0.5f,spline[i]);
-      if(mem->FootDelta[i].x<0) spline[i].x=-spline[i].x;
-      if(mem->FootDelta[i].z<0) spline[i].z=-spline[i].z;
-      spline[i].w = spline[i].w-State;
-    }
-    else
-    {
-      spline[i].x = 0;
-      spline[i].y = sFSin(t*sPI)*0.25f; 
-      spline[i].z = 0;
-      spline[i].w = t;
-    }
-
-    foot[i].Lin3(mem->FootOld[i],mem->FootNew[i],spline[i].w);
-    foot[i].w = 1.0f;
-    /*
-    if(Flags&0x02)
-    {
-      foot[i].y += spline[i].y;
-      mem->FootPart[i].Control(foot[i]);
-      foot[i].y -= spline[i].y;
-    }
-    */
-    sum.Add3(foot[i]);
-  }
-  sum.Scale3(1.0f/wi->FootCount);
-  mat.i.Init(0,0,0,0);
-  mat.j.Init(0,0,0,0); // ryg 040820
-  mat.k.Init(0,0,0,0);
-  mat.l.Init(sum.x,sum.y,sum.z,1);
-  for(i=0;i<wi->FootCount;i++)
-  {
-    v.Sub3(foot[i],sum);
-    mat.i.AddScale3(v,mem->FootDelta[i].x);
-    mat.j.AddScale3(v,mem->FootDelta[i].y);
-    mat.k.AddScale3(v,mem->FootDelta[i].z);
-  }
-  switch((wi->Flags>>2)&3)
-  {
-  case 0:   // straight, copy from input
-    mat.i = matrix.i; 
-    mat.j = matrix.j; 
-    mat.k = matrix.k; 
-    break;
-  case 2:   // use xy
-    mat.i.Unit3();
-    mat.j.Init(0,1,0,0);
-    mat.k.Cross4(mat.i,mat.j);
-    mat.k.Unit3();
-    mat.j.Cross4(mat.k,mat.i);
-    mat.j.Unit3();
-    break;
-  case 1:   // use y
-    mat.k = matrix.k;
-  case 3:   // use xz
-    mat.k.Unit3();
-    mat.j.Cross4(mat.k,mat.i);
-    mat.j.Unit3();
-    mat.i.Cross4(mat.j,mat.k);
-    mat.i.Unit3();
-    break;
-  }
-
-  t = (f+LastLeg)/FootGroup[State];
-  if(t>=2.0f) t-=2.0f;
-  if(t>=1.0f) t-=1.0f;
-  t = (t+State)*0.5f;
-  mem->LegTimeOut = t;
-
-  // advance
-
-  time = kenv->CurrentTime-mem->LastTime;
-  mem->LastTime = kenv->CurrentTime;
-  if(time<0)
-    time = 0;
-  dir = matrix;
-  if(mem->DeviationFlag>0)
-  {
-    dir.l.Add3(mat.l,mem->Deviation);
-  }
-  dir.k.y = 0;
-  dir.k.Unit3();
-  dir.j.Init(0,1,0,0);
-  dir.i.Cross4(dir.j,dir.k);
-  for(i=0;i<wi->FootCount;i++)
-  {
-    if(mem->StepTime[i]<StepSpeed[State])
-      mem->StepTime[i] += time;
-  }
-
-  // find distance
-
-  dist = 0;
-  stepdir.Init();
-  NextLeg = (LastLeg+1)%FootGroup[State];
-  bestleg = NextLeg;
-  for(i=0;i<wi->FootCount;i++)
-  {
-    v.Rotate34(dir,mem->FootDelta[i]);
-    v.Sub3(foot[i]);
-    v.y = 0;
-    f = v.Abs3();
-    if(f>dist && mem->StepTime[i]>=StepSpeed[State])
-    {
-      dist = f;
-      stepdir = v;
-      bestleg = i;
-    }
-    v.Rotate3(dir,spline[i]);
-//    kenv->Var[KV_LEG_L0+i].Add3(foot[i],v);
-//    kenv->Var[KV_LEG_L0+i].w = spline[i].w;
-    mem->LegPosOut[i].Add3(foot[i],v);
-    mem->LegPosOut[i].w = spline[i].w;
-  }
-
-  // change walking/running
-
-  changestate = 1;
-  for(i=0;i<wi->FootCount;i++)
-    if(mem->StepTime[i]<StepSpeed[State])
-      changestate = 0;
-  if((State==0 && dist>wi->RunHighTresh) || (State==1 && dist<wi->RunLowTresh))
-    changestate +=2;
-
-  // changestate = 0 -> in animation                  ->
-  // changestate = 1 -> animation done.               -> issue bestleg when idle
-  // changestate = 2 -> in animation, change state    -> don't issue new steps
-  // changestate = 3 -> animation done, change state  -> change state really
-
-
-//  sDPrintF("%08x:state %d change %d dist %f | %4d %4d %4d %4d %4d %4d\n",mem,State,changestate,dist,mem->StepTime[0],mem->StepTime[1],mem->StepTime[2],mem->StepTime[3],mem->StepTime[4],mem->StepTime[5]);
-  if(changestate==3)
-  {
-    if((State==0 && dist>wi->RunHighTresh) || (State==1 && dist<wi->RunLowTresh))
-    {
-      State=1-State;
-      changestate = 0;
-      LastLeg = LastLeg%FootGroup[State];
-      for(i=0;i<wi->FootCount;i++)
-        mem->StepTime[i]=StepSpeed[State];
-      NextLeg = bestleg%FootGroup[State];
+      mon->State = active;
+      for(i=0;i<5;i++)
+        mon->Body.Part[i].Cell = cell;
     }
   }
-
-  bestleg = bestleg%FootGroup[State];
-  if(mem->Idle && changestate==1)
-    NextLeg = bestleg;
-
-  // do the next step
-
-  mem->Idle = 0;
-  if(changestate!=2 && mem->StepTime[LastLeg]>=StepNext[State] && mem->StepTime[NextLeg]>=StepSpeed[State])
+  else
   {
-    if(mem->InitSteps>0)
-    {
-      mem->InitSteps--;
-      dist = 1024;
-    }
-    if(mem->DeviationFlag>0)
-      mem->DeviationFlag--;
-    if(dist>wi->StepTresh)
-    {
-      v.Sub3(dir.l,mat.l);
-      f = v.Abs3();
-      if((wi->Flags & 1) && mem->InitSteps==0)
-        NextLeg = bestleg;
-
-      if(f>StepLength[State])
-      {
-        mem->NewPos = mat.l;
-        mem->NewPos.AddScale3(v,StepLength[State]/f);
-      }
-      else
-      {
-        mem->NewPos = dir.l;
-      }
-//      mem->NewPos.y = 0;
-      dir.l = mem->NewPos;
-      j = mem->StepTime[LastLeg]-StepNext[State];
-      for(i=NextLeg;i<wi->FootCount;i+=FootGroup[State])
-      {
-        mem->FootOld[i] = foot[i];//mem->FootNew[i];
-//        sDPrintF("soll: %06.3f %06.3f %06.3f --\n ist: %06.3f %06.3f %06.3f\n",mem->FootOld[i].x,mem->FootOld[i].y,mem->FootOld[i].z,dir.l.x,dir.l.y,dir.l.z);
-        v = mem->FootDelta[i];
-        v.y = 0;
-        v.Rotate34(dir);
-        if(moncell)
-        {
-          mem->FootNew[i] = v;        // do the step in any case...
-          mem->StepTime[i] = j;
-
-          if(mem->FootCell[i]==0)
-            mem->FootCell[i] = moncell;
-
-          kenv->Game->CollisionForMonsterMode = 1;      // and then find a better point--
-
-          p0 = v; p0.y += wi->scanup;
-          p1 = v; p1.y -= wi->scandown;
-          ci.Init();
-
-          if(kenv->Game->CollideRay(mem->FootCell[i],p1,p0,ci))//FindFirstIntersect(p0,p1,cell,&plane))
-          {
-            if(ci.Plane.y>0.75 && ci.Pos.y<p0.y)
-            {
-              mem->FootNew[i] = ci.Pos;
-              mem->StepTime[i] = j;
-            }
-          }
-
-          kenv->Game->CollisionForMonsterMode = 0;
-        }
-        else
-        {
-          mem->FootNew[i] = v;
-          mem->StepTime[i] = j;
-        }
-      }
-      LastLeg = NextLeg;
-    }
-    else
-    {
-      mem->Idle = 1;
-    }
-  }
-
-  // paint & cleanup
-
-  matrix = mat;
-
-  mem->State = State;
-  mem->LastLeg = LastLeg;
-  mem->NextLeg = NextLeg;
-}
-
-void KKriegerShot::Exit()
-{
-  if(Event)
-  {
-    Event->Exit();
-    delete Event;
+    mon->State = active;
   }
 }
 
-sBool KKriegerGame::ShotAI(KKriegerShot *shot)
+// the body is moved here; the walk operator animates the legs around it and
+// reports the matrix back through the event.
+
+void KKriegerGame::MonsterAI(KKriegerMonster *mon,KEnvironment *kenv)
 {
-  KKriegerCollideInfo ci;
-  sVector newpos,speed;
-  sMatrix mat;
+  sF32 dist,d,h,hitdist;
+  sVector pos,delta,speed;
+  sVector eye0,eye1,p0,p1,dir,plane;
+  KKriegerCellAdd *cell;
   KEvent *event;
-  sF32 d;
-  sVector dir;
-
-  ci.Init(1<<(KPK_WEAPON0+shot->Weapon),shot->Who);
-  
-  speed.Sub3(shot->Matrix.l,shot->OldPos);
-  if(shot->Mode==2)
-    speed.Scale3(0.999f);
-  newpos.Add3(speed,shot->Matrix.l);
-  newpos.w = 1;
-  if(shot->Mode==2)
-  {
-    newpos.y -= 0.00025f;
-    mat.InitRot(shot->Tensor);
-    shot->Tensor.Scale3(0.990f);
-    shot->Matrix.Mul3(mat);
-  }
-
-  shot->OldPos = shot->Matrix.l;
-  shot->Matrix.l = newpos;
-  if(CollideRay(shot->Cell,shot->Matrix.l,shot->OldPos,ci))
-  {
-    if(shot->Mode==2 && !shot->DoubleKill)
-    {
-      shot->Matrix.l = ci.Pos;
-      shot->Matrix.l.AddScale3(ci.Plane,0.125f);
-      shot->DoubleKill=1;
-      dir = shot->Tensor;
-      shot->Tensor.Cross3(dir,ci.Plane);
-      dir.Cross3(speed,ci.Plane);
-      shot->Tensor.AddScale3(dir,-0.5f);
-      speed.Scale3(0.75f);
-      shot->OldPos.Sub3(shot->Matrix.l,speed);
-      d = speed.Dot3(ci.Plane);
-      shot->OldPos.AddScale3(ci.Plane,d*2.0f);
-    }
-    else
-    {
-      shot->Matrix.l = ci.Pos;
-
-      event = new KEvent;
-      event->Init();
-      event->Op = WeaponExplode[0][shot->Weapon];
-      event->Matrix.InitDir(ci.Plane);
-      event->Matrix.l = shot->Matrix.l;
-      Environment->AddDynamicEvent(event);
-      return sFALSE;
-    }
-  }
-  shot->DoubleKill = 0;
-  if(ci.DCell && ci.DCell->Monster && shot->Who==KCRF_ISPLAYER)
-  {
-    ci.DCell->Monster->Hit(WeaponHits[shot->Weapon],this);
-
-    event = new KEvent;
-    event->Init();
-    event->Op = WeaponExplode[1][shot->Weapon];
-    event->Matrix = shot->Matrix;
-    Environment->AddDynamicEvent(event);
-
-    return sFALSE;
-  }
-  if(ci.DCell && ci.DCell==&Player.HitCell && shot->Who==KCRF_ISMONSTER)
-  {
-    Player.Hit(WeaponHits[shot->Weapon]);
-    return sFALSE;
-  }
-  return sTRUE;
-}
-
-
-void KKriegerGame::MonsterAI(KKriegerMonster *mon,KEnvironment *kenv,sBool machinelife,sBool prevlife)
-{
-  sF32 dist;
-  sVector delta;
-  sVector pos;
-  sVector speed;
-  sVector v;
-  KKriegerCellAdd *cadd;
-//  KKriegerCellAdd *cell;
-  sVector p0,p1;
-  sF32 attackdist;
-  sBool spawn;
-  KKriegerCollideInfo ci;
-//  sMatrix mat;
-//  sInt i;
-
-  // kill monster
 
   if(mon->Life<=0)
-  {
-    mon->State = KMS_IDLE;
-    mon->Life = 0;
-    mon->DeathEvent.Matrix = mon->Matrix;
-    return;
-  }
-
-  // if no player collision, do nothing
-
-  if(Player.Collider.Cell==0)
     return;
 
-  // spawn monster
+  mon->Matrix = mon->Event.ReturnMatrix;
 
-  if(mon->State==KMS_IDLE)
+  pos = mon->Body.Part[0].Pos;
+  delta.Sub3(pos,PlayerPos);
+  delta.y = 0;
+  dist = delta.Abs3();
+  if(dist>1e-6f)
+    delta.Scale3(1.0f/dist);
+
+  // wake up when the player is near and visible, sleep when far and hidden
+
+  eye0 = PlayerPos;
+  eye0.y += 0.5f;
+  eye1 = pos;
+  eye1.y += 0.5f;
+  cell = PlayerCell;
+
+  if(mon->State==KMS_ASLEEP)
   {
-    spawn = 1;                  // normally, all monsters spawn immediatly
-    if((mon->Flags&KMF_WHENPREVDEAD) && prevlife)
-      spawn = 0;                // spawning not allowed when previous is alife
-    if((mon->Flags&KMF_WHENMACHINELIVES) && !machinelife)
-      spawn = 0;                // spawning not allowed when machine is dead
-    if(!kenv->Game->Switches[mon->SpawnSwitch])
-      spawn = 0;                // spawning not allowed by switch
-    if(spawn)
-      mon->State = KMS_SPAWNED;
+    if(dist<mon->NoticeRadius && !FindFirstIntersect(eye0,eye1,cell))
+      ActivateMonster(mon,KMS_AWAKE);
   }
-
-  // calculate distance
-
-  if(mon->State!=KMS_IDLE)
+  if(mon->State!=KMS_ASLEEP)
   {
-    pos = mon->Collider.Pos;
-    delta.Sub3(pos,Player.Collider.Pos);
-    delta.y = 0;
-    dist = delta.UnitAbs3();
-  }
-
-  // monster gets in range
-
-  if(mon->State==KMS_SPAWNED && dist<mon->NoticeRadius)
-  {
-//    cell = FindCell(mon->Collider.Pos);
-//    if(cell)
-    {      
-      mon->State=KMS_INRANGE;
+    if(dist>mon->NoticeRadius && FindFirstIntersect(eye0,eye1,cell))
+    {
+      ActivateMonster(mon,KMS_ASLEEP);
+      mon->State = KMS_ASLEEP;
     }
   }
 
-  // monster goes out of range
-
-  if((mon->State==KMS_INRANGE || mon->State==KMS_ACTIVE) && dist>mon->NoticeRadius*1.5f)
-    mon->State=KMS_SPAWNED;
-
-  // if monster sees player, it gets active.
-  // it is not wise to deactivae monster when it looses the line of sight.
-  // monsters also get active when shot at.
-
-  if(mon->State==KMS_INRANGE)
+  if(mon->State!=KMS_ASLEEP)
   {
-    p0 = Player.Collider.Pos; 
-    p1 = mon->Collider.Pos;
-    p0.y += 1.5f;
-    p1.y += 1.5f;
-    cadd = PlayerCell;
-    ci.Init();
-    if(!CollideRay(cadd,p1,p0,ci))
-      mon->State=KMS_ACTIVE;
-  }
+    // attack
 
-  // now the real monster AI
-
-  if(mon->State==KMS_ACTIVE)
-  {
     mon->MeeleeTimer += 0.01f/mon->MeeleeTime;
     if(mon->MeeleeTimer>=1.0f)
       mon->MeeleeTimer = 1.0f;
@@ -2375,10 +1416,7 @@ void KKriegerGame::MonsterAI(KKriegerMonster *mon,KEnvironment *kenv,sBool machi
     if(mon->RangedTimer>=1.0f)
       mon->RangedTimer = 1.0f;
 
-    v.Sub3(mon->Collider.Pos,PlayerPos);
-    attackdist = v.Dot3(v);
-
-    if(attackdist < 1.5f*1.5f)
+    if(dist<1.5f)
     {
       if(mon->RangedTimer==1.0f && mon->MeeleeTimer==1.0f && mon->MeeleeHits>0)
       {
@@ -2388,160 +1426,68 @@ void KKriegerGame::MonsterAI(KKriegerMonster *mon,KEnvironment *kenv,sBool machi
     }
     else
     {
-      if(mon->RangedTimer==1.0f && mon->MeeleeTimer==1.0f && mon->RangedHits>0 && mon->WeaponKind>=0)
+      if(mon->RangedTimer==1.0f && mon->MeeleeTimer==1.0f && mon->RangedHits>0 && mon->ShotOp)
       {
-        sVector p0,p1;
-        KKriegerCellAdd *cell;
-
         mon->RangedTimer = 0.0f;
-        p0 = Player.Collider.Pos;
-        p0.y += 1.5f;
-        p1 = mon->Collider.Pos;
-        p1.y += 1.5f;
-        ci.Init();
-        cell = Player.Collider.Cell;
-        if(!CollideRay(cell,p1,p0,ci))
+        p0 = PlayerPos;
+        p0.y += 1.0f;
+        p1 = mon->Matrix.l;
+        p1.y += 1.0f;
+        if(!FindFirstIntersect(p0,p1,PlayerCell))
         {
-          p0.Sub4(p1);
-          p0.Unit3();
-          FireShot(kenv,mon->WeaponKind,mon,&p0);
+          event = new KEvent;
+          event->Init();
+          event->Rotate = mon->Event.Rotate;
+          event->Translate = mon->Event.Translate;
+          event->Op = mon->ShotOp;
+          event->Monster = mon;
+          kenv->AddDynamicEvent(event);
         }
       }
     }
 
+    // walk towards or away from the player
+
     if(dist<mon->ChargeRadius)
-    {
-      dist -= mon->MinRadius;
-      dist = sRange<sF32>(dist,mon->Speed,-mon->Speed);
-      speed.Scale3(delta,-dist);
-    }
+      d = dist-mon->MinRadius;
     else
-    {
-      dist -= mon->WaitRadius;
-      dist = sRange<sF32>(dist,mon->Speed,-mon->Speed);
-      speed.Scale3(delta,-dist);
-    }
+      d = dist-mon->WaitRadius;
+    d = sRange<sF32>(d,mon->Speed,-mon->Speed);
 
-    if(!(mon->Flags & KMF_IMMOBILE) && mon->Collider.Cell)
-    {
-      sVector p0;
-      sVector p1;
-      sF32 d,testh,upforce;
-      KKriegerCellAdd *cell;
-      KKriegerCollideInfo ci;
+    speed = pos;
+    speed.AddScale3(delta,-d);
+    speed.Sub3(mon->Body.Part[0].Pos);
 
-      testh = StairHeight + GravityPlayer + mon->Collider.Radius;
-      d = testh;
-      ci.Init(0,KCRF_ISMONSTER);
-      p0 = mon->Collider.Pos;
-      p0.AddScale3(mon->Matrix.k,mon->Collider.Radius);
-      p1 = p0; 
-      p1.y -= testh;
-      cell = mon->Collider.Cell;
+    // stand on the ground like the player
 
-      v.Sub3(mon->Collider.Pos,mon->Collider.OldPos);
-      speed.Add3(mon->MagnetForce);
-      speed.y = 0;
-      speed.w = 0;
-      speed.AddScale3(v,0.9f);
+    h = GravityPlayer+StairHeight;
+    p0 = mon->Body.Part[0].Pos;
+    p1 = p0;
+    p1.y -= h;
+    cell = mon->Body.Part[0].Cell;
+    mon->Body.HitCell.Mode |= KCM_DISABLED;
+    dir.Init(0,-1,0,0);
+    if(FindFirstIntersect(dir,p1,p0,cell,plane,hitdist,0,0))
+      h += hitdist;
+    mon->Body.HitCell.Mode &= ~KCM_DISABLED;
+    if(GravityPlayer+StairHeight>h)
+      speed.y += (StairHeight-GravityPlayer-h)*DampPlayerHeight+GravityPlayer;
 
-      mon->HitCell.Mode |= KCM_DISABLED;
-      if(CollideRay(cell,p1,p0,ci))
-        d += ci.Dist;
-      mon->HitCell.Mode &= ~KCM_DISABLED;
-
-      upforce = 0;
-      if(d<testh)
-      {
-        upforce += (testh-d)*0.1f;
-      }
-      else
-      {
-        speed.y -= GravityPlayer;
-      }
-
-      mon->Collider.OldPos = mon->Collider.Pos;
-      mon->Collider.OldPos.y += upforce;
-      speed.y += upforce;
-      MoveCollider(mon->Collider,speed,KCRF_ISMONSTER);
-//      mon->Collider.Pos.Add3(speed);
-
-      mon->Matrix.i.Init(-delta.z,0,delta.x,0);     // make monster look to player
-      mon->Matrix.j.Init(0,1,0,0);
-      mon->Matrix.k.Init(-delta.x,0,-delta.z,0);
-      mon->Matrix.l = mon->Collider.Pos;
-
-      KKMonsterWalk(kenv,&mon->WalkMem,&KKMonsterWalkInfoTable[mon->WalkStyle],mon->Spline,mon->Matrix,mon->Collider.Cell);
-
-//      mon->Matrix.l = mon->Collider.Pos;
-//      mon->Collider.Pos = mon->Matrix.l;
-    }
-
-    if(mon->Collider.Cell==0)
-    {
-      mon->Hit(65536,kenv->Game);
-    }
+    mon->Body.Part[0].Control(speed);
   }
 
-  // set event for painting
+  // event variables for painting
 
-  mon->Event.Matrix = mon->Matrix;
-
+  mon->Event.Translate = mon->Body.Part[0].Pos;
+  mon->Event.Rotate.Init(0,sFATan2(-delta.x,-delta.z)*0.159155f,0,0);
   mon->Event.Scale.x = mon->MeeleeTimer-0.5f;
-  if(mon->Event.Scale.x<0) mon->Event.Scale.x+=1;
+  if(mon->Event.Scale.x<0)
+    mon->Event.Scale.x += 1.0f;
   mon->Event.Scale.y = mon->RangedTimer-0.5f;
-  if(mon->Event.Scale.y<0) mon->Event.Scale.y+=1;
-  mon->Event.Scale.z = 1.0f * mon->Life / mon->LifeMax;
-
+  if(mon->Event.Scale.y<0)
+    mon->Event.Scale.y += 1.0f;
   mon->Event.CullDist = 35;
-}
-
-// gegenseitige abstoﬂung der monster
-
-void KKriegerGame::MonsterMagnetAI()
-{
-  KKriegerMonster *mons[256];
-  KKriegerMonster *mon0,*mon1;
-  sInt count;
-  sInt i,j;
-  sF32 dist,radius;
-  sVector v;
-
-  // liste aller aktiven monster
-
-  count = 0;
-  for(i=0;i<Monsters.Count;i++)
-  {
-    mon0 = Monsters.Get(i);
-    mon0->MagnetForce.Init(0,0,0,0);
-    if(mon0->State==KMS_ACTIVE && count<256)
-      mons[count++] = mon0;
-  }
-
-  // n^2/2 tests
-
-  radius = 1.0f;
-  for(i=0;i<count-1;i++)
-  {
-    mon0 = mons[i];
-    for(j=i+1;j<count;j++)
-    {
-      mon1 = mons[j];
-      v.Sub3(mon0->Collider.Pos,mon1->Collider.Pos);
-      dist = v.Dot3(v);
-      if(dist<radius*radius)
-      {
-        dist = 1.0f-sFSqrt(dist)/radius;
-        if(dist>0.99f)
-          v.InitRnd();    // vermeide einheitsvector von nullvector..
-        else
-          v.Unit3();
-        mon0->MagnetForce.AddScale3(v,dist*0.001f);
-        mon1->MagnetForce.AddScale3(v,dist*-0.001f);
-      }
-    }
-  }
-  
+  mon->Event.Scale.z = 1.0f*mon->Life/mon->LifeMax;
 }
 
 /****************************************************************************/
@@ -2550,14 +1496,233 @@ void KKriegerGame::MonsterMagnetAI()
 /***                                                                      ***/
 /****************************************************************************/
 
+void KKriegerParticle::Init(const sVector &pos,const sVector &speed,KKriegerCellAdd *cell)
+{
+  sSetMem(this,0,sizeof(*this));
+  Cell = cell;
+  Pos = pos;
+  NewPos = pos;
+  VerifyPos = 1;
+  OldCollPos = pos;
+  OldPos.Sub3(pos,speed);
+}
+
+// a shot touched something
+
+void KKriegerParticle::Hit(KKriegerGame *game,const sVector &pos,const sVector &plane,sF32 dist,sInt hitmonster)
+{
+  KEvent *event;
+  KOp *op;
+
+  if(!ShotEvent)
+    return;
+
+  if(Kind>=KPK_WEAPON0 && Kind<KPK_WEAPON0+KKRIEGER_WEAPONKIND && ShotEvent->Start>0 && ShotEvent->Select==0)
+  {
+    op = game->WeaponExplode[hitmonster][Kind-KPK_WEAPON0];
+    if(op && (hitmonster || ShotEvent->ShotTime+10<game->TickCount))
+    {
+      ShotEvent->Velocity = 5.0f;
+      event = new KEvent;
+      event->Init();
+      event->Op = op;
+      event->Translate = pos;
+      event->Rotate.Init(sFATan2(-plane.y,sFSqrt(plane.x*plane.x+plane.z*plane.z))*0.159155f,sFATan2(plane.x,plane.z)*0.159155f,0,0);
+      game->Environment->AddDynamicEvent(event);
+    }
+  }
+
+  if(!(game->WeaponFlags[Kind-KPK_WEAPON0]&KWF_REFLECT) || hitmonster)
+  {
+    ShotEvent->Select = 1;
+    ShotEvent->Stop();
+  }
+  ShotEvent->ShotTime = game->TickCount;
+}
+
+void KKriegerParticle::Control(const sVector &v)
+{
+  KKriegerParticle *p;
+
+  for(p=this;;p++)
+  {
+    p->Pos.Add3(v);
+    if(p->EndMarker)
+      break;
+  }
+}
+
+/****************************************************************************/
+
+static const sS8 BodyPartPos[5][3] =
+{
+  {  0,0, 0 },
+  { -1,0, 0 },
+  {  0,0,-1 },
+  {  1,0, 0 },
+  {  0,0, 1 },
+};
+
+static const sU8 BodyCons[10][2] =
+{
+  { 0,1 },{ 0,2 },{ 0,3 },{ 0,4 },          // spokes
+  { 1,2 },{ 2,3 },{ 3,4 },{ 4,1 },          // ring
+  { 1,3 },{ 2,4 },                          // diagonals
+};
+
+void KKriegerBody::Init(const sVector &pos,KKriegerCellAdd *cell,sInt kpk)
+{
+  sVector scale,speed,v;
+  sMatrix mat;
+  sInt i;
+
+  scale.Init(0.5f,0.25f,0.5f,0);
+  speed.Init(0,0,0,0);
+  for(i=0;i<5;i++)
+  {
+    v.Init(BodyPartPos[i][0],BodyPartPos[i][1],BodyPartPos[i][2],0);
+    v.Mul3(scale);
+    v.Add3(pos);
+    Part[i].Init(v,speed,cell);
+    Part[i].Kind = kpk+1;
+    Part[i].OldCollPos = pos;               // the particles move out from the center: none starts in a wall
+    Part[i].Mass = 1.0f;
+    Part[i].SkipCell = &HitCell;
+  }
+  Part[0].Kind = kpk;
+  Part[4].EndMarker = 1;
+
+  for(i=0;i<10;i++)
+  {
+    Cons[i].EndMarker = 0;
+    Cons[i].Next = 0;
+    Cons[i].PartA = &Part[BodyCons[i][0]];
+    Cons[i].PartB = &Part[BodyCons[i][1]];
+    v.Sub3(Cons[i].PartA->Pos,Cons[i].PartB->Pos);
+    Cons[i].Dist = v.Abs3();
+  }
+  Cons[9].EndMarker = 1;
+
+  mat.Init();
+  scale.Init(0.5f,1.5f,0.5f,0);
+  HitCell.Init(mat,scale,KCM_SUB);
+  mat.l = pos;
+  mat.l.y += 0.85f;
+  HitCell.PrepareDynamic(mat);
+}
+
+void KKriegerBody::Add(KKriegerGame *game)
+{
+  game->AddPart(&Part[0]);
+  game->AddCons(&Cons[0]);
+  game->AddDCell(&HitCell);
+}
+
+/****************************************************************************/
+
+static const sS8 PartBoxCorner[8][3] =
+{
+  { -1,-1,-1 },{ -1, 1,-1 },{  1, 1,-1 },{  1,-1,-1 },
+  { -1,-1, 1 },{ -1, 1, 1 },{  1, 1, 1 },{  1,-1, 1 },
+};
+
+static const sU8 PartBoxCons[16][2] =
+{
+  { 0,1 },{ 1,2 },{ 2,3 },{ 3,0 },          // front ring
+  { 4,5 },{ 5,6 },{ 6,7 },{ 7,4 },          // back ring
+  { 0,4 },{ 1,5 },{ 2,6 },{ 3,7 },          // edges between
+  { 0,6 },{ 1,7 },{ 2,4 },{ 3,5 },          // space diagonals
+};
+
+void KKriegerPartBox::Init(const sMatrix &mat,const sVector &scale,const sVector &speed,KKriegerCellAdd *cell)
+{
+  sInt i;
+  sVector v;
+
+  for(i=0;i<8;i++)
+  {
+    v.Init(PartBoxCorner[i][0],PartBoxCorner[i][1],PartBoxCorner[i][2],0);
+    v.Scale3(0.5f);
+    v.Mul3(scale);
+    v.Rotate34(mat);
+    Part[i].Init(v,speed,cell);
+  }
+  Part[7].EndMarker = 1;
+
+  for(i=0;i<16;i++)
+  {
+    Cons[i].EndMarker = 0;
+    Cons[i].Next = 0;
+    Cons[i].PartA = &Part[PartBoxCons[i][0]];
+    Cons[i].PartB = &Part[PartBoxCons[i][1]];
+    v.Sub3(Cons[i].PartA->Pos,Cons[i].PartB->Pos);
+    Cons[i].Dist = v.Abs3();
+  }
+  Cons[15].EndMarker = 1;
+}
+
+void KKriegerPartBox::Hit(const sVector &pos,const sVector &v,sF32 mass)
+{
+}
+
+void KKriegerPartBox::Register(KKriegerGame *game)
+{
+  game->AddPart(&Part[0]);
+  game->AddCons(&Cons[0]);
+}
+
+// axes from the parallel edges, origin in the middle of the corners
+
+void KKriegerPartBox::GetMatrix(sMatrix &mat)
+{
+  sVector d;
+  sInt i;
+  static const sU8 edges[3][4][2] =
+  {
+    { { 3,0 },{ 2,1 },{ 7,4 },{ 6,5 } },
+    { { 1,0 },{ 2,3 },{ 5,4 },{ 6,7 } },
+    { { 4,0 },{ 5,1 },{ 6,2 },{ 7,3 } },
+  };
+
+  mat.i.Init(0,0,0,0);
+  mat.j.Init(0,0,0,0);
+  mat.k.Init(0,0,0,0);
+  mat.l.Init(0,0,0,1);
+  for(i=0;i<8;i++)
+    mat.l.Add3(Part[i].Pos);
+  for(i=0;i<4;i++)
+  {
+    d.Sub3(Part[edges[0][i][0]].Pos,Part[edges[0][i][1]].Pos); mat.i.Add3(d);
+    d.Sub3(Part[edges[1][i][0]].Pos,Part[edges[1][i][1]].Pos); mat.j.Add3(d);
+    d.Sub3(Part[edges[2][i][0]].Pos,Part[edges[2][i][1]].Pos); mat.k.Add3(d);
+  }
+  mat.i.Unit3();
+  mat.j.Unit3();
+  mat.k.Unit3();
+  mat.l.Scale3(0.125f);
+}
+
+/****************************************************************************/
+
 void KKriegerGame::FlushPhysic()
 {
-//  sInt i;
   PartUsed = 0;
   ConsUsed = 0;
   DCellUsed = 0;
   Monsters.Count = 0;
-  AddDCell(&Player.HitCell);
+  Player.Body.Add(this);
+}
+
+void KKriegerGame::AddPart(KKriegerParticle *p)
+{
+  sVERIFY(PartUsed < KKRIEGER_MAXPARTICLE);
+  PartPtr[PartUsed++] = p;
+}
+
+void KKriegerGame::AddCons(KKriegerConstraint *c)
+{
+  sVERIFY(ConsUsed < KKRIEGER_MAXCONSTRAINT);
+  ConsPtr[ConsUsed++] = c;
 }
 
 void KKriegerGame::AddDCell(KKriegerCellDynamic *d)
@@ -2571,6 +1736,8 @@ void KKriegerGame::AddDCell(KKriegerCellDynamic *d)
 void KKriegerGame::Physic(sF32 fade)
 {
   sInt i;
+  KKriegerConstraint *cons;
+  KKriegerParticle *part;
   KKriegerCellDynamic *cell;
 
 #if sPROFILE
@@ -2584,259 +1751,553 @@ void KKriegerGame::Physic(sF32 fade)
   CallIntersectIn = 0;
 #endif
 
-  // dynamic cells
+  for(i=0;i<ConsUsed;i++)
+  {
+    for(cons=ConsPtr[i];;cons++)
+    {
+      PhysicCons(cons);
+      if(cons->EndMarker)
+        break;
+    }
+  }
+
+  for(i=0;i<PartUsed;i++)
+  {
+    for(part=PartPtr[i];;part++)
+    {
+      PhysicPart(part);
+      if(part->EndMarker)
+        break;
+    }
+  }
 
   for(i=0;i<DCellUsed;i++)
   {
     cell = DCellPtr[i];
     cell->CurrentMatrix.Lin4(cell->Matrix0,cell->Matrix1,fade);
-    cell->ApplyMatrix(cell->CurrentMatrix);
-    cell->ConfirmedMatrix = cell->CurrentMatrix;
-    cell->Blocked = 0;
+    PhysicDCell(cell);
+  }
+
+  for(i=0;i<PartUsed;i++)
+  {
+    for(part=PartPtr[i];;part++)
+    {
+      part->Pos.Add3(part->Force);
+      part->Force.Init(0,0,0,0);
+      if(part->EndMarker)
+        break;
+    }
+  }
+}
+
+// keep two particles at their distance (without square root)
+
+void KKriegerGame::PhysicCons(KKriegerConstraint *cons)
+{
+  sVector d;
+  sF32 dd,r;
+
+  d.Sub3(cons->PartB->Pos,cons->PartA->Pos);
+  dd = d.Dot3(d);
+  r = cons->Dist*cons->Dist;
+  d.Scale3(r/(r+dd)-0.5f);
+  cons->PartB->Pos.Add3(d);
+  cons->PartA->Pos.Sub3(d);
+}
+
+// verlet integration, then collision
+
+void KKriegerGame::PhysicPart(KKriegerParticle *p)
+{
+  KKriegerCellAdd *cell;
+  sF32 gravity,f;
+  sVector np;
+  sInt i;
+
+  if(p->VerifyPos)
+  {
+    if(p->Cell==0 || p->Cell->OutsideMask(p->OldCollPos)!=0)
+    {
+      cell = FindCell(p->OldCollPos);
+      if(!cell)
+        return;
+      p->Cell = cell;
+    }
+    p->VerifyPos = 0;
+  }
+
+  gravity = Gravity;
+  switch(p->Kind)
+  {
+  case KPK_PLAYER:
+  case KPK_MONSTER:                         // keep the body particles at one height
+    f = 0;
+    for(i=0;i<5;i++)
+      f += p[i].Pos.y;
+    f = f*0.2f*0.25f;
+    for(i=0;i<5;i++)
+      p[i].Pos.y = p[i].Pos.y*0.75f+f;
+    // fall through
+  case KPK_PLAYERAUX:
+  case KPK_MONSTERAUX:
+    gravity = FlyMode ? 0 : GravityPlayer;
+    p->Damp = OnGround ? DampPlayerGround : DampPlayerAir;
+    break;
+  }
+
+  f = 1.0f-p->Damp;
+  p->Damp = 0;
+  np.x = p->Pos.x-f*p->OldPos.x;
+  np.y = p->Pos.y-f*p->OldPos.y;
+  np.z = p->Pos.z-f*p->OldPos.z;
+  p->OldPos = p->Pos;
+  np.x = f*p->Pos.x+np.x;
+  np.y = f*p->Pos.y-gravity+np.y;
+  np.z = f*p->Pos.z+np.z;
+  np.w = 1.0f;
+  p->Pos = np;
+
+  if(MoveParticle(p,0))
+  {
+    p->Damp = 0.1f;
+    p->OldPos.y += gravity;
+  }
+}
+
+// move the cell to CurrentMatrix, pushing the particles out of its way.
+// a particle that can't be pushed blocks the cell for this frame.
+
+void KKriegerGame::PhysicDCell(KKriegerCellDynamic *cell)
+{
+  KKriegerCellDynamic temp;
+  KKriegerParticle *p;
+  sMatrix inv,delta;
+  sVector v,w,d,plane,save;
+  sF32 dist,len2;
+  sBool blocked;
+  sInt i;
+
+  if(cell->PartBox)
+    cell->PartBox->GetMatrix(cell->CurrentMatrix);
+
+  temp = *cell;
+  temp.ApplyMatrix(temp.CurrentMatrix);
+  inv = temp.ConfirmedMatrix;
+  inv.InvCheap4();
+  delta.MulA(inv,temp.CurrentMatrix);
+
+  blocked = 0;
+  dist = 0;
+  for(i=0;i<PartUsed;i++)
+  {
+    for(p=PartPtr[i];;p++)
+    {
+      if(!(cell->Monster && (p->Kind<KPK_WEAPON0 || p->Kind>=KPK_WEAPON0+KKRIEGER_WEAPONKIND))  // monsters only push shots
+        && p->SkipCell!=cell && temp.OutsideMask(p->Pos)==0)
+      {
+        v = p->Pos;
+        w.Rotate4(delta,v);
+        d.Sub3(v,w);                        // against the motion of the cell
+        len2 = d.Dot3(d);
+        if(len2<1e-16)
+        {
+          blocked = 1;
+        }
+        else
+        {
+          d.Scale3(1.0f/sFSqrt(len2));
+          if(!temp.IntersectIn(v,d,plane,dist))
+            blocked = 1;
+          v.AddScale3(d,dist);
+          v.AddScale3(plane,-EPSILON);
+          v.w = 1.0f;
+
+          save = p->Pos;
+          p->Pos = v;
+          if(MoveParticle(p,1))
+            blocked = 1;
+          p->Pos = save;
+        }
+      }
+      if(p->EndMarker)
+        break;
+    }
+  }
+
+  if(!blocked)
+  {
     cell->Mode &= ~KCM_UNCONFIRMED;
+    cell->ConfirmedMatrix = cell->CurrentMatrix;
+    cell->ApplyMatrix(cell->ConfirmedMatrix);
+  }
+  else
+  {
+    cell->Blocked = 1;
   }
 }
 
 /****************************************************************************/
-/***                                                                      ***/
-/***   Totally new math                                                   ***/
-/***                                                                      ***/
+
+// sweep the particle from OldCollPos to Pos. on a collision it slides along
+// the plane, then along a second plane or the edge of both.
+// returns 0 when free, 1 when it slid, 2 when it had to stay where it was.
+
+sInt KKriegerGame::MoveParticle(KKriegerParticle *part,sBool onlyoldcoll)
+{
+  sVector p0,p1,d,v;
+  sVector plane0,plane1,plane2;
+  sVector pl0,pl1,e,eb,q,t;
+  sF32 dist,invlen,c,s,invdet;
+  KKriegerCellAdd *cadd;
+  sInt result;
+
+  GAMEPERF(CallMoveParticle);
+
+  p0 = part->OldCollPos;
+  p1 = part->Pos;
+  cadd = part->Cell;
+  result = 0;
+  if(part->SkipCell)
+    part->SkipCell->Mode |= KCM_DISABLED;
+
+  d.Sub3(p1,p0);
+  dist = d.Dot3(d);
+  if(dist<1e-16)
+    goto stuck;
+  invlen = 1.0f/sFSqrt(dist);
+  d.Scale3(invlen);
+
+  // first contact: move there and slide on the plane
+
+  SomethingBadHasHappened = 0;
+  if(!FindFirstIntersect(d,p1,p0,cadd,plane0,dist,part,part))
+    goto done;
+  result = 1;
+  if(SomethingBadHasHappened)
+    goto stuck;
+  p0 = p1;
+  p0.AddScale3(d,dist);
+  if(part->ShotEvent)
+    part->Hit(this,p0,plane0,0,0);
+  p0.AddScale3(plane0,EPSILON);
+  p1.AddScale3(plane0,EPSILON-(plane0.Dot3(p1)+plane0.w));
+  v.Sub3(p1,p0);
+  if(v.Dot3(v)>1e-16)
+    d.Scale3(v,invlen);
+
+  // second contact
+
+  if(!FindFirstIntersect(d,p1,p0,cadd,plane1,dist,part,0))
+    goto done;
+  if(SomethingBadHasHappened)
+    goto stuck;
+  c = plane0.Dot3(plane1);
+  p0 = p1;
+  p0.AddScale3(d,dist);
+  if(c<-0.9f)                               // between opposite walls: stay
+  {
+    part->OldPos = part->OldCollPos;
+    part->Pos = part->OldCollPos;
+    p1 = part->OldCollPos;
+  }
+  else if(c>EPSILON)                        // slide on the second plane
+  {
+    p0.AddScale3(plane1,EPSILON);
+    p1.AddScale3(plane1,EPSILON-(plane1.Dot3(p1)+plane1.w));
+  }
+  else                                      // slide along the edge of both planes
+  {
+    pl0 = plane0;
+    pl0.w -= EPSILON;
+    pl1 = plane1;
+    pl1.w -= EPSILON;
+    e.Cross3(plane0,plane1);
+    q.Init(0,0,0,0);
+    t.Cross3(pl1,e);
+    q.AddScale3(t,-pl0.w);
+    t.Cross3(e,pl0);
+    q.AddScale3(t,-pl1.w);
+    eb.Cross3(pl0,pl1);
+    invdet = 1.0f/(e.y*pl1.x*pl0.z + e.x*pl1.z*pl0.y + e.z*pl1.y*pl0.x
+                 - e.y*pl1.z*pl0.x - pl1.x*pl0.y*e.z - pl0.z*e.x*pl1.y);
+    s = e.Dot3(p1);
+    p1 = q;
+    p1.AddScale3(eb,s);
+    p1.Scale3(invdet);
+    s = e.Dot3(p0);
+    p0 = q;
+    p0.AddScale3(eb,s);
+    p0.Scale3(invdet);
+  }
+
+  // third contact: give up
+
+  v.Sub3(p1,p0);
+  if(v.Dot3(v)>1e-16)
+    d.Scale3(v,invlen);
+  d.Scale3(invlen);
+  if(FindFirstIntersect(d,p1,p0,cadd,plane2,dist,part,0))
+    goto stuck;
+
+done:
+  if(part->Kind)
+    CheckZones(part->OldCollPos,part->Cell,p1,cadd,part);
+  part->OldCollPos = p1;
+  part->Cell = cadd;
+  if(!onlyoldcoll)
+    part->Pos = p1;
+  if(part->SkipCell)
+    part->SkipCell->Mode &= ~KCM_DISABLED;
+  return result;
+
+stuck:
+  if(part->Kind)
+    CheckZones(part->OldCollPos,part->Cell,p1,cadd,part);
+  if(!onlyoldcoll)
+  {
+    part->OldPos = part->OldCollPos;
+    part->Pos = part->OldCollPos;
+  }
+  if(part->SkipCell)
+    part->SkipCell->Mode &= ~KCM_DISABLED;
+  return 2;
+}
+
 /****************************************************************************/
 
+// a ray from p0 to p1. moves p1 to the first hit.
 
-sBool KKriegerGame::CollideRay(
-  KKriegerCellAdd *&cadd,         // old / new add-cell
-  const sVector &p1,              // move to here
-  const sVector &p0,              // move from here
-  KKriegerCollideInfo &ci)        // collide info, or 0
+sBool KKriegerGame::FindFirstIntersect(const sVector &p0,sVector &p1,KKriegerCellAdd *&cadd,sVector *plane)
 {
-  sInt i,j;
-  sVector v;
+  sVector d,pl;
+  sF32 dist;
+
+  d.Sub3(p1,p0);
+  if(FindFirstIntersect(d,p1,p0,cadd,pl,dist,0,0))
+  {
+    p1.AddScale3(d,dist);
+    if(plane)
+      *plane = pl;
+    return sTRUE;
+  }
+  return sFALSE;
+}
+
+// follow the ray p0->p1 (direction d) through the connected adds and find the
+// first wall or sub. the hit is at p1+d*dist (dist<=0). part is the moving
+// particle (0 for probes), zonepart gets the impacts.
+
+sBool KKriegerGame::FindFirstIntersect(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd *&cadd,sVector &plane,sF32 &dist,KKriegerParticle *part,KKriegerParticle *zonepart)
+{
   KKriegerCellAdd *list[16];
-  KKriegerCollideInfo ci2;
+  KKriegerCellAdd *next;
   sInt count;
-  sVector d;
-  sBool isnotplayer;
+  sInt i,j;
+  sBool isplayer;
+  sVector v,plane2;
+  sF32 dist2;
 
   GAMEPERF(CallFindFirstIntersect);
+  isplayer = part && (part->Kind==KPK_PLAYER || part->Kind==KPK_PLAYERAUX);
   list[0] = cadd;
   count = 1;
-
-  isnotplayer = !(ci.Flags&KCRF_ISPLAYER);
-  d.Sub4(p1,p0);
 
 again:
 
 // see if we leave this cadd
 
-  if(cadd->IntersectOut(p1,d,ci.Plane,ci.Dist))
+  if(cadd->IntersectOut(p1,d,plane,dist))
   {
     v = p1;
-    v.AddScale3(d,ci.Dist);
-    ci.Pos = v;
+    v.AddScale3(d,dist);
     if(count<16)
     {
       for(i=0;i<cadd->Adds.Count;i++)
       {
-        sVERIFY(cadd->Adds[i]!=cadd);
-        if(cadd->Adds[i]->OutsideMask(v)==0)
-        {
-          for(j=0;j<count;j++)
-            if(list[j]==cadd->Adds[i])
-              goto retry;
+        next = cadd->Adds[i];
+        if(next->OutsideMask(v)!=0)
+          continue;
+        if(isplayer && next->OnlyForShot)
+          continue;
+        for(j=0;j<count;j++)
+          if(list[j]==next)
+            goto retry;
 
-          cadd = cadd->Adds[i];
-          list[count++] = cadd;
-          goto again;
-        }
+        list[count++] = cadd;               // the list holds the adds left behind
+        cadd = next;
+        goto again;
 retry:;
       }
     }
-    else
-    {
-#if LOGGING
-      sDPrintF("FindFirstIntersect(): to many retries\n");
-#endif
-    }
 
-    // we collided with the outside of an add, even after following all 
-    // connected adds. we have a list of all visited adds in (list,count)
-    // and we need to check them for a collision that might be before the
-    // collision with the add's outside wall.
+    // we collided with the outside of an add, even after following all
+    // connected adds. a sub may be hit before that wall.
 
-    ci2 = ci;
-    if(CollideRaySub(d,p1,p0,list,count,ci2))
+    if(FindSubIntersect(d,p1,p0,list,count,plane2,dist2,part,zonepart) && dist2<dist)
     {
-      if(ci2.Dist<ci.Dist)
-      {
-        ci.Dist  = ci2.Dist;
-        ci.Plane = ci2.Plane;
-        ci.Pos   = ci2.Pos;
-      }
+      dist = dist2;
+      plane = plane2;
     }
     return sTRUE;
   }
 
   // we are well in add, check subs
-  // add check for 2 cadd'S here!
 
-  return CollideRaySub(d,p1,p0,list,count,ci);
+  return FindSubIntersect(d,p1,p0,list,count,plane,dist,part,zonepart);
 }
 
 // find nearest intersection with subcell.
-// .. add code to check zones here ..
 
-sBool KKriegerGame::CollideRaySub(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd **list,sInt count,KKriegerCollideInfo &ci)
+sBool KKriegerGame::FindSubIntersect(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd **list,sInt count,sVector &plane,sF32 &dist,KKriegerParticle *part,KKriegerParticle *zonepart)
 {
   sInt i,j;
   sBool collided;
+  sBool isplayer;
   KKriegerCell *cell;
-  KKriegerCellAdd *cadd;
   KKriegerCellDynamic *dcell;
-  sInt isnotplayer;
-  sBool hit0,hit1;
+  sVector v,dd;
 
   GAMEPERF(CallFindSubIntersect);
-
-  isnotplayer = !(ci.Flags&KCRF_ISPLAYER);
+  isplayer = part && (part->Kind==KPK_PLAYER || part->Kind==KPK_PLAYERAUX);
+  dist = EPSILON;
   collided = 0;
-  ci.Dist = (sF32) EPSILON;
   for(j=0;j<count;j++)
   {
-    cadd = list[j];
-    for(i=0;i<cadd->Subs.Count;i++)
+    for(i=0;i<list[j]->Subs.Count;i++)
     {
-      cell = cadd->Subs[i];
-      if((cell->Mode&3)==KCM_SUB)
+      cell = list[j]->Subs[i];
+      if(cell->Mode==KCM_SUB || (cell->Mode==(KCM_SUB|KCM_ONLYMONSTER) && CollisionForMonsterMode))
       {
-        if(CollideRaySub2(d,p1,p0,cell,ci))
+        if(!isplayer && cell->OnlyForShot)
+          continue;
+        if(FindSubIntersect2(d,p1,p0,cell,plane,dist))
         {
           collided = 1;
-          ci.DCell = 0;
-//          if(SomethingBadHasHappened) goto fatal;
+          if(SomethingBadHasHappened)
+            return sTRUE;
         }
       }
     }
+  }
 
+  for(i=0;i<DCellUsed;i++)
+  {
+    dcell = DCellPtr[i];
+    if(dcell->Mode!=KCM_SUB)
+      continue;
+    if(!isplayer && dcell->OnlyForShot)
+      continue;
+    if((dcell->Monster || dcell==&Player.Body.HitCell) && !part)   // probes don't see bodies
+      continue;
+    if(FindSubIntersect2(d,p1,p0,dcell,plane,dist))
+    {
+      collided = 1;
+      if(SomethingBadHasHappened)
+        return sTRUE;
+      if(zonepart && !(zonepart->ShotEvent && zonepart->ShotEvent->Select))
+      {
+        dcell->Collided |= 1<<zonepart->Kind;
+        v = p1;
+        v.AddScale3(d,dist);
+        zonepart->Hit(this,v,plane,0,dcell->Monster!=0);
+      }
+      if(part && part->Mass>0 && dcell->PartBox)
+      {
+        dd.Sub3(p1,p0);
+        v = p1;
+        v.AddScale3(d,dist);
+        dcell->PartBox->Hit(v,dd,part->Mass);
+      }
+    }
+  }
+
+  return collided;
+}
+
+sBool KKriegerGame::FindSubIntersect2(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCell *cell,sVector &plane,sF32 &distresult)
+{
+  sVector planei,v;
+  sF32 besti;
+  sInt m0,m1;
+
+  if(cell->Mode==KCM_SUB || (cell->Mode==(KCM_SUB|KCM_ONLYMONSTER) && CollisionForMonsterMode))
+  {
+    m0 = cell->OutsideMask(p0);
+    m1 = cell->OutsideMask(p1);
+    if(m0==0)                               // started inside: collision panic
+    {
+      plane.Init(1,0,0,0);
+      SomethingBadHasHappened = 1;
+      distresult = 0;
+      return sTRUE;
+    }
+    if(m0&m1)                               // both on the outside of one plane
+      return sFALSE;
+    if(cell->IntersectIn(p1,d,planei,besti) && besti<distresult)
+    {
+      v = p1;
+      v.AddScale3(d,besti);
+      if(cell->OutsideMask(v,EPSILON)==0)
+      {
+        distresult = besti;
+        plane = planei;
+        plane.Neg4();
+        return sTRUE;
+      }
+    }
+  }
+  return sFALSE;
+}
+
+// mark the zones the particle entered, left or is inside
+
+void KKriegerGame::CheckZones(const sVector &p0,KKriegerCellAdd *c0,const sVector &p1,KKriegerCellAdd *c1,KKriegerParticle *part)
+{
+  sInt i;
+  sU32 mask;
+  sBool hit0,hit1;
+  KKriegerCell *cell;
+  KKriegerCellAdd *cadd;
+
+  if(part->ShotEvent && part->ShotEvent->Select)
+    return;
+  mask = 1<<part->Kind;
+  cadd = c0;
+  for(;;)
+  {
     for(i=0;i<cadd->Zones.Count;i++)
     {
       cell = cadd->Zones[i];
       hit0 = (cell->OutsideMask(p0)==0);
       hit1 = (cell->OutsideMask(p1)==0);
 
-      if(hit0 && !hit1) cell->Leave |= ci.ZoneMask;
-      if(!hit0 && hit1) cell->Enter |= ci.ZoneMask;
-      if(hit1) cell->Collided |= ci.ZoneMask;
+      if(hit0 && !hit1) cell->Leave |= mask;
+      if(!hit0 && hit1) cell->Enter |= mask;
+      if(hit1) cell->Collided |= mask;
     }
+    if(cadd==c1)
+      break;
+    cadd = c1;
   }
-  for(i=0;i<DCellUsed;i++)
-  {
-    cell = dcell = DCellPtr[i];
-    if((cell->Mode&3)==KCM_SUB)
-    {
-      if(CollideRaySub2(d,p1,p0,cell,ci))
-      {
-        collided = 1;
-        ci.DCell = dcell;
-//        if(SomethingBadHasHappened) goto fatal;
-      }
-    }
-    if((cell->Mode&3)==KCM_ZONE)
-    {
-      hit0 = (cell->OutsideMask(p0)==0);
-      hit1 = (cell->OutsideMask(p1)==0);
-
-      if(hit0 && !hit1) cell->Leave |= ci.ZoneMask;
-      if(!hit0 && hit1) cell->Enter |= ci.ZoneMask;
-      if(hit1)
-      {
-        cell->Collided |= ci.ZoneMask;
-        ci.DCell = dcell;
-      }
-    }
-  }
-
-//fatal:
-  return collided;
 }
-
-sBool KKriegerGame::CollideRaySub2(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCell *cell,KKriegerCollideInfo &ci)
-{
-  sF32 besti;
-  sVector v,planei;
-  sBool collided;
-  sF32 distresult;
-
-  // find any rejection plane
-  if(cell->RejectPlane(p0,p1))
-    return 0;
-
-  // if there's none, we have a collision
-  collided = 0;
-  distresult = ci.Dist;
-  if(cell->IntersectIn(p1,d,planei,besti,ci.Radius))
-  {
-    if(besti<distresult)
-    {
-      v = p1;
-      v.AddScale3(d,besti);
-      if(cell->OutsideMask(v,ci.Radius-EPSILON)==0)
-      {
-        distresult = besti;
-        collided = 1;
-
-        ci.Dist = distresult;
-        ci.Plane = planei;
-        ci.Plane.Neg4();
-        ci.Pos = p1;
-        ci.Pos.AddScale3(d,distresult);
-      }
-    }
-  }
-
-  return collided;
-}
-
 
 /****************************************************************************/
 /***                                                                      ***/
-/***   New Math                                                           ***/
+/***   Math                                                               ***/
 /***                                                                      ***/
 /****************************************************************************/
-
-
-// calculate which planes are out
-// positive epsilons will enlarge the box!
-
-
-
-sBool KKriegerCell::RejectPlane(const sVector &v0,const sVector &v1)
-{
-  sInt i;
-
-  for(i=0;i<PlaneCount;i++)
-  {
-    if(Planes[i].x*v0.x+Planes[i].y*v0.y+Planes[i].z*v0.z+Planes[i].w<0)
-      if(Planes[i].x*v1.x+Planes[i].y*v1.y+Planes[i].z*v1.z+Planes[i].w<0)
-        return sTRUE;
-  }
-
-  return sFALSE;
-}
 
 sInt KKriegerCell::OutsideMask(const sVector &v,sF32 radius)    // normal points inside!
 {
   sInt i;
   sInt mask;
-  sF32 f;
 
   GAMEPERF(KKriegerGame::CallOutsideMask);
 
   mask = 0;
   for(i=0;i<PlaneCount;i++)
   {
-    f = Planes[i].x*v.x+Planes[i].y*v.y+Planes[i].z*v.z+Planes[i].w-radius;
-    if(f<0)
+    if(Planes[i].x*v.x+Planes[i].y*v.y+Planes[i].z*v.z+Planes[i].w+radius<0)
       mask |= 1<<i;
   }
   return mask;
@@ -2844,11 +2305,11 @@ sInt KKriegerCell::OutsideMask(const sVector &v,sF32 radius)    // normal points
 
 // calculate intersection point ray -> cell when casting from inside to outside
 
-sBool KKriegerCell::IntersectOut(const sVector &p,const sVector &d,sVector &plane,sF32 &distresult,sF32 radius)
+sBool KKriegerCell::IntersectOut(const sVector &p,const sVector &d,sVector &plane,sF32 &distresult)
 {
   sInt bestplane;
   sInt i;
-  sF32 dist,det;
+  sF32 dist;
   sF32 best;
 
   GAMEPERF(KKriegerGame::CallIntersectOut);
@@ -2857,18 +2318,10 @@ sBool KKriegerCell::IntersectOut(const sVector &p,const sVector &d,sVector &plan
   bestplane = -1;
   for(i=0;i<PlaneCount;i++)
   {
-    dist = Planes[i].Dot3(p)+Planes[i].w-radius;
+    dist = Planes[i].Dot3(p)+Planes[i].w;
     if(dist<0)
     {
-      det = Planes[i].Dot3(d);
-      if(det>-1.0e-16)
-      {
-#if LOGGING
-        sDPrintF("KKriegerCell::IntersectOut() Panic\n");
-#endif
-//        return sFALSE;
-      }
-      dist = -dist/det;
+      dist = (-1.0f/Planes[i].Dot3(d))*dist;
       if(dist<best)
       {
         best = dist;
@@ -2887,7 +2340,7 @@ sBool KKriegerCell::IntersectOut(const sVector &p,const sVector &d,sVector &plan
 
 // calculate intersection point ray -> cell when casting from the outside
 
-sBool KKriegerCell::IntersectIn(const sVector &p,const sVector &d,sVector &plane,sF32 &distresult,sF32 radius)
+sBool KKriegerCell::IntersectIn(const sVector &p,const sVector &d,sVector &plane,sF32 &distresult)
 {
   sInt bestplane;
   sInt i;
@@ -2900,7 +2353,7 @@ sBool KKriegerCell::IntersectIn(const sVector &p,const sVector &d,sVector &plane
   bestplane = -1;
   for(i=0;i<PlaneCount;i++)
   {
-    dist = Planes[i].Dot3(p)+Planes[i].w-radius;
+    dist = Planes[i].Dot3(p)+Planes[i].w;
     det = Planes[i].Dot3(d);
     if(det>1.0e-16)
     {
@@ -2910,12 +2363,6 @@ sBool KKriegerCell::IntersectIn(const sVector &p,const sVector &d,sVector &plane
         best = dist;
         bestplane = i;
       }
-    }
-    else
-    {
-#if LOGGING
-      sDPrintF("KKriegerCell::IntersectIn() Panic\n");
-#endif
     }
   }
   if(bestplane>=0)
@@ -2942,423 +2389,7 @@ KKriegerCellAdd *KKriegerGame::FindCell(const sVector &v)
   return 0;
 }
 
-// faked code to check CollideRay
-
-sBool KKriegerGame::MoveColliderX(KKSolidCollider &collider, const sVector &v,sInt who)
-{
-  KKriegerCollideInfo ci;
-  KKriegerCellAdd *cell;
-  sVector old;
-
-  ci.Init((who&KCRF_ISPLAYER)?KPM_PLAYER:0,who);
-  ci.Radius = collider.Radius;
-  old = collider.Pos;
-  collider.Pos.Add3(v);
-  if(CollideRay(collider.Cell,collider.Pos,old,ci))
-  {
-    collider.Pos = ci.Pos;
-  }
-
-  if(collider.Cell->OutsideMask(collider.Pos,0)!=0)
-  {
-    cell = FindCell(collider.Pos);
-    if(cell)
-    {
-      collider.Cell = cell;
-      sDPrintF("Collision: Rescued Desaster\n");
-    }
-    else
-    {
-      sDPrintF("Collision: Lasting Desaster\n");
-    }    
-  }
-
-  return sFALSE;
-}
-
-// cool code that does not work
-
-sBool KKriegerGame::MoveCollider(KKSolidCollider &collider, const sVector &v,sInt who)
-{
-  sVector tmp;
-  KKriegerCellAdd *cell;
-  KKriegerCellAdd *list[16];
-  sInt count;
-  sVector sphere;
-  sInt i;
-
-  tmp = collider.Pos;
-  collider.Pos.Add3(v);//collider.Movement);
-
-  sphere = collider.Pos;
-  sphere.w = collider.Radius;
-
-  count = 1;
-  list[0] = collider.Cell;
-  CollideSoftSphereAdd(sphere, list, count);
-  for(i = 0; i < DCellUsed; i++)
-  {
-    if((who & KCRF_ISMONSTER) && DCellPtr[i]->Monster) continue;
-    if((who & KCRF_ISPLAYER)  && DCellPtr[i] == &Player.HitCell) continue;
-
-    CollideSoftSphereSub(sphere, DCellPtr[i]);
-  }
-  collider.Pos = sphere;
-  collider.Pos.w = 1.0f;
-
-  // update cell (there might be a cheaper way...)
-
-  KKriegerCollideInfo ci;
-
-  ci.Init((who&KCRF_ISPLAYER)?KPM_PLAYER:0,who);
-
-  CollideRay(collider.Cell,collider.Pos,tmp,ci);
-
-  if(collider.Cell->OutsideMask(collider.Pos,0)!=0)
-  {
-    cell = FindCell(collider.Pos);
-    if(cell)
-    {
-      collider.Cell = cell;
-      sDPrintF("Collision: Rescued Desaster\n");
-    }
-    else
-    {
-      sDPrintF("Collision: Lasting Desaster\n");
-    }    
-  }
-  return sFALSE;
-}
-
-void KKriegerGame::CollideSoftSphereAdd(sVector &sphere, KKriegerCellAdd **cellList, sInt &count)
-{
-  KKriegerCellAdd *cell;
-  int i, j;
-
-  cell = cellList[count-1];
-  if(sFAbs(cell->approxDistance(sphere)) < sphere.w)
-  {
-    GenSimpleFaceList *face;
-
-    face = cell->Faces;
-    while(face != 0)
-    {
-      CollideSoftSphereFace(sphere, face->Vertices, face->VertexCount);
-      face = face->Next;
-    }
-  }
-
-  for(i = 0; i < cell->Adds.Count; i++)
-  {
-    if(cell->Adds[i]->approxDistance(sphere) < sphere.w)
-    {
-      for(j = 0; j < count; j++)
-        if(cell->Adds[i] == cellList[j])
-          break;
-
-      if(j == count && count < 16)
-      {
-        cellList[count++] = cell->Adds[i];
-        CollideSoftSphereAdd(sphere, cellList, count);
-      }
-    }
-  }
-
-  for(i = 0; i < cell->Subs.Count; i++)
-    if(cell->Subs[i]->approxDistance(sphere) < sphere.w)
-      CollideSoftSphereSub(sphere, cell->Subs[i]);
-}
-
-void KKriegerGame::CollideSoftSphereSub(sVector &sphere, KKriegerCell *cell)
-{
-  sVector plane[4];
-  static const sInt order[6][4] = 
-  {
-    { 0,2,3,1 },
-    { 2,6,7,3 },
-    { 3,7,5,1 },
-    { 4,0,1,5 },
-    { 2,0,4,6 },
-    { 7,6,4,5 },
-  };
-  int i;
-
-  for(i = 0; i < 6; i++)
-  {
-    plane[0] = cell->Vertices[order[i][0]];
-    plane[1] = cell->Vertices[order[i][1]];
-    plane[2] = cell->Vertices[order[i][2]];
-    plane[3] = cell->Vertices[order[i][3]];
-    CollideSoftSphereFace(sphere, plane, 4);
-  }
-}
-
-sF32 KKriegerCell::approxDistance(const sVector &p)
-{
-  sInt i;
-  sF32 result, distance;
-
-  result = 10000;
-  for(i = 0; i < PlaneCount; i++)
-  {
-    distance = p.Dot3(Planes[i]) + Planes[i].w;
-    if(distance < result)
-      result = distance;
-  }
-
-  return -result;
-}
-
-void KKriegerGame::CollideSoftSphereFace(sVector &sphere, const sVector *vertices, int numVertices)
-{
-  sVector collPoint, shift;
-  sF32 length, distance;
-
-  if(CheckSphereVsFace(sphere, vertices, numVertices, collPoint))
-  {
-    shift.Sub3(sphere, collPoint);
-    length = shift.Abs3();
-    distance = (sphere.w - length) * 0.5f;
-    sphere.AddScale3(shift, distance / length);
-    sphere.w -= distance;
-  }
-}
-
-sBool KKriegerGame::CheckSphereVsFace(const sVector &sphere, const sVector *vertices, int numVertices, sVector &nearestPoint)
-{
-  sVector normal;
-  sVector a, b, toSphere;
-  sVector tmp2, tmp;
-  sVector sphereCopy;
-  sF32 distance;
-  sInt i;
-  sBool result, inside;
-
-  a.Sub3(vertices[2], vertices[1]);
-  b.Sub3(vertices[0], vertices[1]);
-  normal.Cross3(a, b);
-  if(normal.Abs3() <= EPSILON)
-    return false;
-  normal.Unit3();
-
-  toSphere.Sub3(sphere, vertices[0]);
-  distance = normal.Dot3(toSphere);
-  // early out if sphere to far from plane
-  if(sFAbs(distance) > sphere.w)
-    return sFALSE;
-
-  // now test for each edge whether this point lies inside the face
-  // if it lies outside, check for collision with the edge
-  sphereCopy = sphere;
-  result = sFALSE;
-  inside = sTRUE;
-  for(i = 0; i < numVertices; i++)
-  {
-    tmp.Sub3(vertices[(i+1) % numVertices], vertices[i]);
-    tmp2.Cross3(tmp, normal);
-    tmp.Sub3(sphere, vertices[i]);
-    if(tmp.Dot3(tmp2) > 0)
-    {
-      inside = sFALSE;
-      // check edge
-      if(CheckSphereVsEdge(sphereCopy, vertices[i], vertices[(i+1) % numVertices], nearestPoint))
-      {
-        result = sTRUE;
-        sphereCopy.w = sphereCopy.Distance(nearestPoint);
-      }
-    }
-  }
-
-  if(inside == sFALSE)
-    return result;
-  
-  // just find and return the nearest point on the plane
-  nearestPoint.Scale3(normal, -distance);
-  nearestPoint.Add3(sphere);
-  return sTRUE;
-}
-
-sBool KKriegerGame::CheckSphereVsEdge(const sVector &sphere, const sVector &v1, const sVector &v2, sVector &nearestPoint)
-{
-  sVector unit, toSphere;
-  sF32 a, length;
-
-  unit.Sub3(v2, v1);
-  length = unit.Abs3();
-  if(length < EPSILON)
-    return false;
-  unit.Scale3(1.0f / length);
-  toSphere.Sub3(sphere, v1);
-  a = unit.Dot3(toSphere);
-  if(a < 0)
-  {
-    // test vertice 1
-    if(toSphere.Abs3() > sphere.w)
-      return sFALSE;
-    nearestPoint = v1;
-    return sTRUE;
-  }
-  if(a > length)
-  // the second vertice is tested as the first one of the next edge if appropriate
-    return sFALSE;
-  
-  nearestPoint.Scale3(unit, a);
-  nearestPoint.Add3(v1);
-  toSphere.Sub3(sphere, nearestPoint);
-  if(toSphere.Abs3() > sphere.w)
-    return sFALSE;
-  return sTRUE;
-}
-
-#define SPLITHEAPMAX 1024
-sVector SplitHeapVector[2][SPLITHEAPMAX];
-sInt SplitHeapIndex[2];
-
-void KKriegerGame::CreateCollisionFaces(KKriegerCellAdd &add)
-{
-  GenSimpleFaceList *cur, *next;
-  int i;
-  static const sInt order[6][4] = 
-  {
-    { 0,2,3,1 },
-    { 2,6,7,3 },
-    { 3,7,5,1 },
-    { 4,0,1,5 },
-    { 2,0,4,6 },
-    { 7,6,4,5 },
-  };
-
-  // add original faces
-  add.DeleteFaces();
-  for(i = 0; i < 6; i++)
-  {
-    cur = new GenSimpleFaceList;
-    cur->Init(4);
-    cur->Vertices[0] = add.Vertices[order[i][0]];
-    cur->Vertices[1] = add.Vertices[order[i][1]];
-    cur->Vertices[2] = add.Vertices[order[i][2]];
-    cur->Vertices[3] = add.Vertices[order[i][3]];
-    cur->Next = add.Faces;
-    add.Faces = cur;
-  }
-
-  for(i = 0; i < add.Adds.Count; i++)
-  {
-    cur = add.Faces;
-    add.Faces = 0;
-    while(cur != 0)
-    {
-      next = cur->Next;
-      SplitHeapIndex[0] = 0;
-      SplitHeapIndex[1] = 0;
-      if(SplitCollisionFace(*cur, add.Adds[i]->Planes, 0, add.Adds[i]->PlaneCount, add))
-      {
-        cur->Next = add.Faces;
-        add.Faces = cur;
-      }
-      else
-      {
-        cur->Exit();
-        delete cur;
-      }
-      sVERIFY(SplitHeapIndex[0]==0);
-      sVERIFY(SplitHeapIndex[1]==0);
-
-      cur = next;
-    }
-  }
-}
-
-sBool KKriegerGame::SplitCollisionFace(const GenSimpleFace &face, const sVector *planes, sInt plane, sInt nPlanes, KKriegerCellAdd &add)
-{
-  GenSimpleFace sides[2];
-  sBool use[2];
-  sInt i, j;
-  sVector center;
-  sVector normal;
-  
-//  debug_count_splits++;
-  if(nPlanes == 0)
-    return sTRUE;
-
-  {
-    sVector a, b;
-    a.Sub3(face.Vertices[2], face.Vertices[1]);
-    b.Sub3(face.Vertices[0], face.Vertices[1]);
-    normal.Cross3(a, b);
-  }
-
-  sides[0].Vertices = &SplitHeapVector[0][SplitHeapIndex[0]];
-  sides[1].Vertices = &SplitHeapVector[1][SplitHeapIndex[1]];
-  face.Clip(planes[plane], sides);
-  SplitHeapIndex[0] += sides[0].VertexCount;
-  SplitHeapIndex[1] += sides[1].VertexCount;
-  sVERIFY(SplitHeapIndex[0]<SPLITHEAPMAX)
-  sVERIFY(SplitHeapIndex[1]<SPLITHEAPMAX)
-
-
-  for(i = 0; i < 2; i++)
-  {
-    use[i] = sides[i].VertexCount > 2;
-    
-    if(use[i] && plane == nPlanes - 1)
-    {
-      use[i] = sFALSE;
-      center.Init3();
-      for(j = 0; j < sides[i].VertexCount; j++)
-        center.Add3(sides[i].Vertices[j]);
-      center.Scale3(1.0f / sides[i].VertexCount);
-      for(j = 0; j <= nPlanes; j++)
-      {
-        float d = planes[j].Dot3(center) + planes[j].w;
-        if(d < 0 || (d < EPSILON*4 && planes[j].Dot3(normal) > 0))
-          use[i] = sTRUE;
-      }
-    }
-
-    if(use[i] && plane < nPlanes - 1)
-      use[i] = SplitCollisionFace(sides[i], planes, plane + 1, nPlanes, add);
-  }
-
-  if(!(use[0] && use[1]))
-  {
-    for(i = 0; i < 2; i++)
-    {
-      if(use[i])
-      {
-        GenSimpleFaceList *NewFace = new GenSimpleFaceList;
-        NewFace->Init(sides[i].VertexCount);
-        for(j = 0; j < sides[i].VertexCount; j++)
-          NewFace->Vertices[j] = sides[i].Vertices[j];
-        NewFace->Next = add.Faces;
-        add.Faces = NewFace;
-      }
-    }
-  }
-
-  SplitHeapIndex[0] -= sides[0].VertexCount;
-  SplitHeapIndex[1] -= sides[1].VertexCount;
-
-//  sides[0].Exit();
-//  sides[1].Exit();
-
-  return use[0] && use[1];
-}
-
-void KKriegerCellAdd::DeleteFaces()
-{
-  GenSimpleFaceList *cur, *next;
-
-  cur = Faces;
-  while(cur != 0)
-  {
-    next = cur->Next;
-    cur->Exit();
-    delete cur;
-    cur = next;
-  }
-}
-
+/****************************************************************************/
 /****************************************************************************/
 /***                                                                      ***/
 /***   Operators                                                          ***/
@@ -3473,6 +2504,8 @@ class KObject * __stdcall Init_KKrieger_Events(KOp *op)
 
 /****************************************************************************/
 
+/****************************************************************************/
+
 struct MonsterMem : public KInstanceMem
 {
   KKriegerMonster Monster;
@@ -3482,12 +2515,8 @@ void __stdcall Exec_KKrieger_Monster(KOp *op,KEnvironment *kenv)
 {
   KKriegerMonster *mon;
   sF32 *fp;
-  sInt *ip;
-  //sMatrix oldmat;
   sMatrix mat;
-  sVector scale,delta;
-//  KKriegerCellAdd *cell;
-  sInt i;
+  sVector scale,offset,pos;
 
   MonsterMem *mem;
 
@@ -3499,95 +2528,53 @@ void __stdcall Exec_KKrieger_Monster(KOp *op,KEnvironment *kenv)
     mem->DeleteChild = &mon->Event.FirstInstance;
     mem->DeleteChild2 = &mon->DeathEvent.FirstInstance;
   }
-  /*
-  if(mon->Life==-1)
-  {
-    mon->Event.FirstInstance->DeleteChain();
-    mon->Event.FirstInstance = 0;
-  }
-  */
 
-  if(mem->Reset || mon->State==KMS_RESPAWN)
+  if(mem->Reset || kenv->Game->MonsterResetTicks)
   {
     fp = op->GetAnimPtrF(0);
-    ip = op->GetAnimPtrS(0);
 
     mon->Event.Init();
-    sCopyMem(&mon->Speed          ,fp+ 6,16*4);
-
-    mon->Speed = mon->Speed/1000;
-    mon->WalkStyle = ip[26];
-    mon->WeaponKind = ip[27];
-    mon->Spline = op->GetSpline(0);
+    mon->Event.Rotate.Init(fp[0],fp[1],fp[2],0);
+    mon->Event.Translate.Init(fp[3],fp[4],fp[5],0);
+    sCopyMem(&mon->Speed,fp+6,14*4);
+    mon->Speed = mon->Speed*0.001f;
+    mon->ShotOp = op->GetLink(0);
     mon->Life = mon->LifeMax;
-    mon->State = KMS_IDLE;
-    mon->SpawnSwitch = ip[28];
+    mon->State = KMS_ASLEEP;
+    mon->Matrix = kenv->ExecStack.Top();
+    mon->Event.Translate.Add3(mon->Matrix.l);
     mon->Event.Op = 0;
+    mon->Event.ReturnMatrix.Init();
+    mon->Event.ReturnMatrix.l = mon->Event.Translate;
+    mon->Event.ReturnMatrix.l.w = 1.0f;
     mon->Event.Monster = mon;
     mon->DeathEvent.Init();
-    mon->PosOffset.Init4(fp[23],fp[24],fp[25],0);
 
-    mon->Matrix = kenv->ExecStack.Top();
-    delta.Sub3(mon->Matrix.l,kenv->Game->Player.Collider.Pos);
-    delta.y = 0;
-    delta.Unit3();
-    mon->Matrix.i.Init(-delta.z,0,delta.x,0);     // make monster look to player
-    mon->Matrix.j.Init(0,1,0,0);
-    mon->Matrix.k.Init(-delta.x,0,-delta.z,0);
+    // the hit box turns with the monster's rotation parameter
 
-    mon->Collider.Pos = mon->Matrix.l;
-    mon->Collider.Cell = kenv->Game->FindCell(mon->Collider.Pos);
-    mon->Collider.Radius = 0.25f;
-    mon->Collider.OldPos = mon->Collider.Pos;
-    if(mon->Collider.Cell==0)
-      mon->Life = 0;
+    mat.InitEuler(mon->Event.Rotate.x,mon->Event.Rotate.y,mon->Event.Rotate.z);
+    scale.Init(fp[20],fp[21],fp[22],0);
+    offset.Init(fp[23],fp[24],fp[25],0);
+    mat.l.Rotate4(mat,offset);
 
-    scale.Init(fp[20],fp[21],fp[22]);
-    mat.Init();
-    mat.l.Add3(mon->PosOffset);
-    mon->HitCell.Init(mat,scale,KCM_ZONE);
-    mat = mon->Matrix;
-    mon->HitCell.PrepareDynamic(mat);
-    mon->HitCell.Monster = mon;
-    mon->WalkMem.Reset = 1;
-
-    mon->Matrix.l = mon->Collider.Pos;
-    KKMonsterWalk(kenv,&mon->WalkMem,&KKMonsterWalkInfoTable[mon->WalkStyle],mon->Spline,mon->Matrix,mon->Collider.Cell);
-
-    if(kenv->NextMonsterOverride)
-    {
-      mon->KillSwitch = kenv->NextMonsterKillSwitch;
-      mon->SpawnSwitch = kenv->NextMonsterSpawnSwitch;
-      mon->Flags |= kenv->NextMonsterFlags;
-      kenv->NextMonsterOverride = 0;
-    }
+    pos = mon->Matrix.l;
+    pos.y += 0.5f;
+    mon->Body.Init(pos,kenv->Game->FindCell(pos),KPK_MONSTER);
+    mon->Body.HitCell.Init(mat,scale,KCM_SUB);
+    mon->Body.HitCell.PrepareDynamic(mon->Matrix);
+    mon->Body.HitCell.Monster = mon;
   }
 
   sVERIFY(op->GetInput(0));
   if(mon->Life>0)
   {
-    mon->HitCell.Matrix1 = mon->Event.Matrix;
+    mon->Body.HitCell.Matrix1 = mon->Matrix;
     *kenv->Game->Monsters.Add() = mon;
-    if(mon->State>=KMS_INRANGE)
-    {
-      kenv->Game->AddDCell(&mon->HitCell);
-      kenv->ExecStack.PushIdentity();
-      for(i=0;i<8;i++)
-        kenv->Var[KV_LEG_L0+i] = mon->WalkMem.LegPosOut[i];
-      kenv->Var[KV_LEG_TIMES].x = mon->WalkMem.LegTimeOut;
-      op->GetInput(0)->ExecEvent(kenv,&mon->Event,1);
-      kenv->ExecStack.Pop();
-    }
-  }
-  else
-  {
-    if(op->GetInput(1))
-    {
-      kenv->ExecStack.PushIdentity();
-      mon->DeathEvent.Matrix = mon->Event.Matrix;
-      op->GetInput(1)->ExecEvent(kenv,&mon->DeathEvent,1);
-      kenv->ExecStack.Pop();
-    }
+    if(mon->State!=KMS_ASLEEP)
+      mon->Body.Add(kenv->Game);
+    kenv->ExecStack.PushIdentity();
+    op->GetInput(0)->ExecEvent(kenv,&mon->Event,1);
+    kenv->ExecStack.Pop();
   }
 }
 
@@ -3680,18 +2667,18 @@ void __stdcall Exec_KKrieger_SplashDamage(KOp *op,KEnvironment *kenv,sInt hits,s
 static sBool sMakePlane(sVector &p,const sVector &v0,const sVector &v1,const sVector &v2)
 {
   sVector d0,d1,v;
-  sF64 e;
+  sF32 e;
 
   d0.Sub3(v0,v1);
   d1.Sub3(v1,v2);
   v.Cross3(d0,d1);
 
   if(v.Dot3(v)<1e-10) return sFALSE;
-  
-  e = sFSqrt(v.Dot3(v));                    // we need some really normal normals here
-  v.x = v.x/e;
-  v.y = v.y/e;
-  v.z = v.z/e;
+
+  e = 1.0f/sFSqrt(v.Dot3(v));
+  v.x = v.x*e;
+  v.y = v.y*e;
+  v.z = v.z*e;
   v.w = v.Dot3(v1);
 
   p = v;
@@ -3719,8 +2706,7 @@ void KKriegerCell::Init(const sVector *va,sInt mode)
   sInt k;
   sF32 d;
   sVector p;
-  sBool ok;
-  static sInt order[6][4] = 
+  static sInt order[6][4] =
   {
     { 0,2,3,1 },
     { 2,6,7,3 },
@@ -3732,51 +2718,38 @@ void KKriegerCell::Init(const sVector *va,sInt mode)
 
   sSetMem(this,0,sizeof(*this));
 
-  for(k=0;k<8;k++)
-    Vertices[k] = va[k];
-
-  Mode = mode&3;//(3|8);
-  OnlyForShot = (mode&4)?1:0;
-//  NotForPlayer = (mode&KCM_NOTFORPLAYER)?1:0;
+  Mode = mode&(3|KCM_ONLYMONSTER);
+  OnlyForShot = (mode&KCM_NOTFORPLAYER)?1:0;
 
   for(k=0;k<6;k++)
   {
-    ok = sFALSE;
-    if(!sMakePlane(p,va[order[k][0]],va[order[k][1]],va[order[k][2]]))
+    if(sMakePlane(p,va[order[k][0]],va[order[k][1]],va[order[k][2]]))
     {
-      if(!sMakePlane(p,va[order[k][1]],va[order[k][2]],va[order[k][3]]))
-        if(!sMakePlane(p,va[order[k][2]],va[order[k][3]],va[order[k][0]]))
-          if(!sMakePlane(p,va[order[k][3]],va[order[k][0]],va[order[k][1]]))
-            ; // no way finding even a single plane, no        
-          else
-            ok = sTRUE; // it's just a triange
-        else
-          ok = sTRUE; // it's just a triange
-      else
-        ok = sTRUE; // it's just a triange
-    }
-    else  // it's a quad. lets check if it's a plane one!
-    {
-      ok = sTRUE;
+      // it's a quad. lets check if it's a plane one!
       d = p.Dot3(va[order[k][3]])-p.w;
       if(d<-0.005f)    // it's a bad one, and even inconvex
       {
         sMakePlane(p,va[order[k][1]],va[order[k][2]],va[order[k][3]]);
-        sVERIFY(PlaneCount<=KKRIEGER_MAXPLANES);
+        sVERIFY(PlaneCount<KKRIEGER_MAXPLANES);
         Planes[PlaneCount++] = p;
         sMakePlane(p,va[order[k][3]],va[order[k][0]],va[order[k][1]]);
       }
       else if(d>0.005f)   // it's a bad one, but convex
       {
-        sVERIFY(PlaneCount<=KKRIEGER_MAXPLANES);
+        sVERIFY(PlaneCount<KKRIEGER_MAXPLANES);
         Planes[PlaneCount++] = p;
         sMakePlane(p,va[order[k][2]],va[order[k][3]],va[order[k][0]]);
       }
-    }
-    if(ok)
-    {
-      sVERIFY(PlaneCount<=KKRIEGER_MAXPLANES);
+      sVERIFY(PlaneCount<KKRIEGER_MAXPLANES);
       Planes[PlaneCount++] = p;
+    }
+    else    // a triangle: only the corners 2,3,0 make a plane here
+    {
+      if(sMakePlane(p,va[order[k][2]],va[order[k][3]],va[order[k][0]]))
+      {
+        sVERIFY(PlaneCount<KKRIEGER_MAXPLANES);
+        Planes[PlaneCount++] = p;
+      }
     }
   }
 
@@ -3809,27 +2782,11 @@ void KKriegerCell::Init(const sVector *va,sInt mode)
 
 /****************************************************************************/
 
-void KKriegerCell::DoRespawn()
-{
-  Respawn = 0;
-  if(Event[1])
-  {
-    if(Event[1]->FirstInstance)
-      Event[1]->FirstInstance->DeleteChain();
-    Event[1]->FirstInstance = 0;
-  }
-}
-
-/****************************************************************************/
-
 void KKriegerCellDynamic::PrepareDynamic(sMatrix &mat)
 {
   sInt i;
   for(i=0;i<PlaneCount;i++)
     OrigPlanes[i] = Planes[i];
-
-  for(i = 0; i < 8; i++)
-    OrigVertices[i] = Vertices[i];
 
   Mode |= KCM_UNCONFIRMED;
   Blocked = 0;
@@ -3837,22 +2794,25 @@ void KKriegerCellDynamic::PrepareDynamic(sMatrix &mat)
   CurrentMatrix = mat;
   Matrix0 = mat;
   Matrix1 = mat;
+  PartBox = 0;
   Monster = 0;
 }
 
 void KKriegerCellDynamic::ApplyMatrix(sMatrix &mat)
 {
   sInt i;
+  sVector n,p;
+
   for(i=0;i<PlaneCount;i++)
   {
-    Planes[i].RotatePl(mat,OrigPlanes[i]);
-    Planes[i].Scale4(1.0f / Planes[i].Abs3());
-  }
-
-  for(i = 0; i < 8; i++)
-  {
-    Vertices[i].Rotate3(mat, OrigVertices[i]);
-    Vertices[i].Add3(mat.l);
+    n = OrigPlanes[i];
+    p.Scale3(n,-n.w);                       // a point on the plane
+    p.w = 1;
+    n.Rotate3(mat);
+    p.Rotate34(mat);
+    n.Unit3();
+    n.w = -n.Dot3(p);
+    Planes[i] = n;
   }
 
   Center = mat.l;
@@ -3861,4 +2821,3 @@ void KKriegerCellDynamic::ApplyMatrix(sMatrix &mat)
 }
 
 /****************************************************************************/
-

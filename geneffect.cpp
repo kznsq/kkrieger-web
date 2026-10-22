@@ -327,7 +327,6 @@ void __stdcall Exec_Effect_Print(KOp *op,KEnvironment *kenv,sInt flags,sF32 size
   sInt i;
   sMaterialEnv env;
   sInt centerchar;
-  sBool inf;
 
   mat = (GenMaterial *) op->GetLinkCache(0);
 
@@ -404,7 +403,6 @@ void __stdcall Exec_Effect_Print(KOp *op,KEnvironment *kenv,sInt flags,sF32 size
           if(*text==';')
             text++;
 
-          inf = 0;
           switch(what)
           {
           case 'a':
@@ -421,8 +419,6 @@ void __stdcall Exec_Effect_Print(KOp *op,KEnvironment *kenv,sInt flags,sF32 size
             break;
           case 'W':
             val = kenv->Game->Player.Ammo[(kenv->Game->Player.CurrentWeapon/2)&3];
-            if(kenv->Game->Player.CurrentWeapon==0)
-              inf = 1;
             break;
 #if sPLAYER
           case 'f':
@@ -431,21 +427,12 @@ void __stdcall Exec_Effect_Print(KOp *op,KEnvironment *kenv,sInt flags,sF32 size
 #endif
           }
 
-          if(inf)
+          for(i=0;i<len;i++)
           {
-            *p++ = 'i';
-            *p++ = 'n';
-            *p++ = 'f';
+            p[len-i-1] = val%10+base;
+            val/=10;
           }
-          else
-          {
-            for(i=0;i<len;i++)
-            {
-              p[len-i-1] = val%10+base;
-              val/=10;
-            }
-            p+=len;
-          }
+          p+=len;
         }
         else if(text[0]=='%' && (text[1]=='i' || text[1]=='s'))
         {

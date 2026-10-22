@@ -281,7 +281,7 @@ struct KEvent                     // timeline event
   sF32 EndInterval;               // end interval time (default 1)
 
   // obscure special hardcoded shit...
-//  sMatrix ReturnMatrix;           // pass back a matrix to system, used by WALK
+  sMatrix ReturnMatrix;           // pass back a matrix to system, used by WALK
   struct KKriegerMonster *Monster;// connect collision to monster, used by PHYSIC
   sInt CullDist;                  // set if you want distance-culling
 };

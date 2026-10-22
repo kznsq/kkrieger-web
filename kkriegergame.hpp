@@ -27,10 +27,10 @@
 #define KKRIEGER_STATS          16          // 4 stats+AMMOKIND+WEAPONKIND
 
 struct KKriegerCell;
-//struct KKriegerParticle;
-//struct KKriegerConstraint;
+struct KKriegerParticle;
+struct KKriegerConstraint;
+struct KKriegerPartBox;
 struct KKriegerGame;
-struct KKriegerShot;
 
 
 // cell mode
@@ -40,8 +40,8 @@ struct KKriegerShot;
 #define KCM_ZONE                2
 #define KCM_MAX                 3
 
-#define KCM_NOTFORPLAYER        0x04        // (sub/add only) forbidden for KCRF_ISPLAYER
-#define KCM_ONLYMONSTER         0x08        // (sub/add only) allowed only for KCRF_ISMONSTER
+#define KCM_NOTFORPLAYER        0x04        // (sub/add only) stored as KKriegerCell::OnlyForShot
+#define KCM_ONLYMONSTER         0x08        // (sub only) solid only while CollisionForMonsterMode is set
 #define KCM_DISABLED            0x10        // (dynamic only) the box has been temporarly disabled
 #define KCM_UNCONFIRMED         0x20        // (dynamic only) the box has not yet been confirmed
 
@@ -119,7 +119,7 @@ public:
 
 struct KKriegerCell
 {
-  sVector BBMin,BBMax;                      // (obsolete) bounding box
+  sVector BBMin,BBMax;                      // bounding box
   sVector Planes[KKRIEGER_MAXPLANES];       // .. with PlaneCount. normal points INSIDE
   sVector Center;                           // center, for hit-reaction
   sInt PlaneCount;
@@ -127,28 +127,21 @@ struct KKriegerCell
   KEvent *Event[2];                         // item of collectable, event for item gone
 
   sInt Mode;                                // add or sub
-  sInt OnlyForShot;                         // not used in MoveCollider 
+  sInt OnlyForShot;                         // KCM_NOTFORPLAYER: an add the player can't enter, a sub only the player hits
   KLogic Logic;                             // what to do..
   sU32 Enter;                               // particle of that (1<<kind) has entered (KCM_ZONE only)
   sU32 Leave;                               // particle of that (1<<kind) has left (KCM_ZONE only)
   sU32 Collided;                            // particle of that (1<<kind) is inside (KCM_ZONE) or has collided (KCM_SUB)
   sInt Respawn;                             // backward-counter to rewspawn
 
-  sVector Vertices[8];                      // original vertices in world space
-
   // interface
 
-  sBool RejectPlane(const sVector &v1,const sVector &v2); // tries to find a plane v1 and v2 are on the same side of
-  sInt OutsideMask(const sVector &v,sF32 radius=0);   // bitmask for each plane if v is outside
-  sBool IntersectOut(const sVector &p,const sVector &d,sVector &plane,sF32 &dist,sF32 radius=0); 
-  sBool IntersectIn (const sVector &p,const sVector &d,sVector &plane,sF32 &dist,sF32 radius=0); 
-
-  sF32 approxDistance(const sVector &p); // negative for inside, positive for outside
+  sInt OutsideMask(const sVector &v,sF32 radius=0);   // bitmask for each plane if v is outside. positive radius enlarges the cell
+  sBool IntersectOut(const sVector &p,const sVector &d,sVector &plane,sF32 &dist);
+  sBool IntersectIn (const sVector &p,const sVector &d,sVector &plane,sF32 &dist);
 
   void Init(const sMatrix &mat,const sVector &scale,sInt mode);
   void Init(const sVector *v,sInt mode);
-
-  void DoRespawn();
 };
 
 struct KKriegerCellAdd : KKriegerCell
@@ -156,20 +149,16 @@ struct KKriegerCellAdd : KKriegerCell
   sArray<KKriegerCellAdd*> Adds;            // neighbourhood adds
   sArray<KKriegerCell*> Subs;               // subs inside this add
   sArray<KKriegerCell*> Zones;              // zones inside this add
-  struct GenSimpleFaceList *Faces;          // collisionfaces
-
-  void DeleteFaces();
+  sVector Vertices[8];                      // corners in world space, for connecting cells
 };
 
 
 struct KKriegerCellDynamic : KKriegerCell
 {
-  sVector Delta;                            // inverted matrix-movement
   sInt Blocked;                             // during movement, cell was blocked.
   sVector OrigPlanes[6];                    // original planes.
-  sVector OrigVertices[8];                  // original vertices
 
-//  struct KKriegerPartBox *PartBox;          // link to partbox, for smashing crates
+  KKriegerPartBox *PartBox;                 // link to partbox, for smashing crates
   struct KKriegerMonster *Monster;          // connect to monster for hitting
 
   sMatrix ConfirmedMatrix;                  // the matrix, where the particles are outside (if Active==1)
@@ -181,26 +170,6 @@ struct KKriegerCellDynamic : KKriegerCell
   void ApplyMatrix(sMatrix &mat);           // apply the matrix, called by Physic
 };
 
-struct KKriegerCollideInfo                  // result of ray collision 
-{
-  sVector Plane;                            // plane of collision face
-  sVector Pos;                              // position of collision
-  sF32 Dist;                                // penetration depth
-  sF32 Radius;                              // move planes toward point by this value (makes point thicker)
-  sU32 ZoneMask;                            // bitmask to mark zones enter/leave/collide
-  sU32 Flags;                               // KCRF_??
-  KKriegerCellDynamic *DCell;               // collided with dynamic cell
-
-  void Init(sU32 zonemask=0,sU32 flags=0) 
-  { sSetMem(this,0,sizeof(*this)); ZoneMask=zonemask; Flags=flags; }
-};
-                                            // flags for CollideRay.
-#define KCRF_ISPLAYER     0x0001            // exclude "notforplayer" collisions
-#define KCRF_ISMONSTER    0x0002
-#define KCRF_COLLPLAYER   0x0004            // collide with player
-#define KCRF_COLLMONSTER  0x0008            // collide with monster
-
-/*
 struct KKriegerParticle
 {
   sInt EndMarker;                           // last in array.
@@ -218,87 +187,48 @@ struct KKriegerParticle
 
   sVector Force;                            // position-deta created by "hit"
   sVector Pos;                              // current position
-  sVector OldCollPos;
+  sVector OldCollPos;                       // last position known to be free
   sVector OldPos;                           // old position
   sVector NewPos;                           // move cell to new pos during physic. set this to manipulate cell.
 
-//  sInt Time;
-
-  void Init(sVector &pos,sVector &speed,KKriegerCellAdd *cell);
-  void Hit(KKriegerGame *,const sVector &pos,const sVector &v,sF32 dist,sInt hitmonster);
-  void Control(sVector &v);
+  void Init(const sVector &pos,const sVector &speed,KKriegerCellAdd *cell);
+  void Hit(KKriegerGame *,const sVector &pos,const sVector &plane,sF32 dist,sInt hitmonster);
+  void Control(const sVector &v);
 };
-*/
-/*
+
 struct KKriegerConstraint                   // connect two particles
 {
-  sInt EndMarker;           // last in array.
+  sInt EndMarker;                           // last in array.
   KKriegerConstraint *Next;                 // linked list
-//  sInt Kind;
   KKriegerParticle *PartA,*PartB;
   sF32 Dist;
 };
-*/
-/*
-struct KKriegerBody
+
+struct KKriegerBody                         // player or monster: a flat cross of particles
 {
-  KKriegerParticle Part[5];                 // particles that make feet
-  KKriegerConstraint Cons[10];              // constraints that link feet
-  KKriegerCellDynamic HitCell;              // cell used for hitting monster
+  KKriegerParticle Part[5];                 // center, then four around it
+  KKriegerConstraint Cons[10];              // constraints that link them
+  KKriegerCellDynamic HitCell;              // cell used for hitting
   void Init(const sVector &pos,KKriegerCellAdd *cell,sInt kpk);
   void Add(KKriegerGame *game);
-  void MoveDelta(const sVector &pos);
 };
-*/
-struct KKSolidCollider
+
+struct KKriegerPartBox                      // a box of particles, for crates and bombs
 {
-  sVector Pos,OldPos;
-  KKriegerCellAdd *Cell;
-  sF32 Radius;
-
-//  void Init(const sVector &pos, KKriegerCellAdd *cell);
+  KKriegerParticle Part[8];                 // corners
+  KKriegerConstraint Cons[16];              // edges and space diagonals
+  void Init(const sMatrix &mat,const sVector &scale,const sVector &speed,KKriegerCellAdd *cell);
+  void Hit(const sVector &pos,const sVector &v,sF32 mass);
+  void Register(KKriegerGame *game);
+  void GetMatrix(sMatrix &mat);
 };
 
-
-struct KKMonsterWalkMem                     // this was copied from the walk operator
-{
-  sInt Reset;
-//  KKriegerParticle FootPart[8];
-//  KKriegerParticle BodyPart;
-  KKriegerCellAdd *FootCell[8];
-  sVector FootOld[8];
-  sVector FootNew[8];
-  sInt StepTime[8];
-  sInt LastTime;
-  sVector OldPos,NewPos,FootCenter;
-  sInt State;                               // state 0=walk, 1=run
-  sInt LastLeg;                             // 0 = left; 1 = right
-  sInt NextLeg;                             // (LastLeg+1)%FootGroup
-  sInt Idle;                                // no new steps issued last frame
-  sVector Deviation;                        // avoid walls
-  sInt DeviationFlag;
-  sInt InitSteps;
-  sVector FootDelta[8];                     // position of the foot-contact point relative to body
-
-  sVector LegPosOut[8];
-  sF32 LegTimeOut;
-};
-
-                                            // monster flags
-#define KMF_WHENPREVDEAD            1       // spawn only if previous is dead
-#define KMF_WHENMACHINELIVES        2       // spawn only if previous machine is alife
-#define KMF_MACHINE                 4       // this is a spawn-machine
-#define KMF_IMMOBILE                8       // monster can't move!
-
-#define KMS_RESPAWN                 0       // monster state
-#define KMS_IDLE                    1       // monster is not active in any way. dead monsters are here too.
-#define KMS_SPAWNED                 2       // monster is existing
-#define KMS_INRANGE                 3       // monster is in range, but AI is not activated. 
-#define KMS_ACTIVE                  4       // monster is activated
+#define KMS_ASLEEP                  0       // monster state: not in the physics, not thinking
+#define KMS_AWAKE                   1       // in the physics, walking and attacking
 
 struct KKriegerMonster                      // a monster 
 {
-  sMatrix Matrix;                           // rotation of monster. translation is a copy of Collider.Pos
+  sMatrix Matrix;                           // where the walk operator put the body last frame
 
   // no not change order of this block
   sF32 Speed;
@@ -323,24 +253,14 @@ struct KKriegerMonster                      // a monster
   KEvent Event;                             // the monster itself
   KEvent DeathEvent;                        // the monster itself
 
+  KOp *ShotOp;                              // operator a ranged attack runs as a new event
   sInt Life;
-  sF32 MeeleeTimer;                         // 0..MeeleeTime
-  sF32 RangedTimer;                         // 0..RangedTime
+  sF32 MeeleeTimer;                         // 0..1
+  sF32 RangedTimer;                         // 0..1
   sInt State;                               // KMS_???
-  sInt WalkStyle;
-  sInt WeaponKind;
-  KSpline *Spline;
+  KKriegerBody Body;
 
-  sVector MagnetForce;                      // abstossung der monster gegeneinander
-  sVector PosOffset;                        // offset between matrix end colliderpos
-  KKSolidCollider Collider;
-  KKriegerCellDynamic HitCell;
-  KKMonsterWalkMem WalkMem;
-  sInt SpawnSwitch;
-
-  sInt GetType() const;
   void Hit(sInt hits,KKriegerGame *game);
-  void Sound(sInt handle,sF32 volume);
 };
 
 struct KKriegerPlayer
@@ -371,15 +291,12 @@ struct KKriegerPlayer
 
 // physics
 
-  KKriegerCellDynamic HitCell;
-  KKSolidCollider Collider;
+  KKriegerBody Body;
 
 // interface
 
-  void MakeBody(sVector &pos,KKriegerCellAdd *cell);
   void Init();
   void Hit(sInt hits);
-  void Sound(sInt handle,sF32 volume=1.0f); // (internal) helper
 };
 
 struct KKriegerRespawn
@@ -400,15 +317,12 @@ struct KKriegerGame
   sArray<KKriegerCell *> CellSub;
   sArray<KKriegerCell *> CellZone;
 
-  sArray<KKriegerCell *> CellList;
-
   // stuff added each frame
 
   sArray<KKriegerMonster *> Monsters;
-  sArray<KKriegerShot> Shots;
 
-//  KKriegerParticle *PartPtr[KKRIEGER_MAXPARTICLE];
-//  KKriegerConstraint *ConsPtr[KKRIEGER_MAXCONSTRAINT];
+  KKriegerParticle *PartPtr[KKRIEGER_MAXPARTICLE];
+  KKriegerConstraint *ConsPtr[KKRIEGER_MAXCONSTRAINT];
   KKriegerCellDynamic *DCellPtr[KKRIEGER_MAXDCELL];
 
   sInt PartUsed;
@@ -475,7 +389,6 @@ struct KKriegerGame
   sF32 DampPlayerCam;
 
   // Stuff
-  sBool WasInOptions;                       // some switches are checked after leaving options
 
   KEvent WeaponEvent;                       // event for displaying weapon
   sF32 WeaponTimer;                         // time for weapon animation
@@ -494,7 +407,7 @@ struct KKriegerGame
   sInt CollisionForMonsterMode;
   sInt LastKey;
   sInt TickCount;
-  sInt PlayerAdds;
+  sInt MonsterResetTicks;                   // monster operators reset their monsters while this counts down
  
   // statistics
 
@@ -520,16 +433,12 @@ struct KKriegerGame
   void SetScene(GenScene *);
   void SetPlayer(const sVector &,sF32 dir,sF32 look);
   void SetSceneR(GenScene *scene,const sMatrix &base,GenScene *usescene,sInt phase);
-  void AddMesh(KKriegerMesh *,const sMatrix &mat,GenScene *usescene);
-
-  void CellSiftDown(sInt n,sInt k);
-  void CellConnect();
+  void AddMesh(KKriegerMesh *,const sMatrix &mat,GenScene *usescene,sInt phase);
 
   sBool OnKey(sU32 key);
   void OnTick(KEnvironment *kenv,sInt slices);
   void AddEvents(KEnvironment *kenv);
   void OnPaint(sMaterialEnv *env);
-  void OnOptionsChanged();
 
   void Panic();
   void ResetRoot(KEnvironment *kenv,KOp *root,sBool firsttime);
@@ -540,57 +449,34 @@ struct KKriegerGame
   void GetCamera(sMaterialEnv &);
   void GetPlayer(sMatrix &);
 
-  // sound
-  void PlayerSound(sInt sound,sF32 volume=1.0f); // sound at player position with player velocity
-
   // game
 
   void ActivateMonster(KKriegerMonster *mon,sInt active);
-  void MonsterAI(KKriegerMonster *mon,KEnvironment *kenv,sBool machinelife,sBool prevlife);
-  void MonsterMagnetAI();
-  sBool ShotAI(KKriegerShot *shot);
+  void MonsterAI(KKriegerMonster *mon,KEnvironment *kenv);
   void Zones(KEnvironment *kenv);
   void RespawnAt(sInt i);
-  void FireShot(KEnvironment *kenv,sInt weapon,KKriegerMonster *monster,const sVector *monsterfiredir);
 
   // add dynamically managed resources per frame
 
   void FlushPhysic();
-//  void AddPart(KKriegerParticle *);
-//  void AddCons(KKriegerConstraint *);
+  void AddPart(KKriegerParticle *);
+  void AddCons(KKriegerConstraint *);
   void AddDCell(KKriegerCellDynamic *);
 
   // particles (intern)
 
-//  sBool MoveParticle(KKriegerParticle *part,sBool onlyoldcoll);
+  sInt MoveParticle(KKriegerParticle *part,sBool onlyoldcoll);
   void Physic(sF32 fade);
-//  void PhysicCons(KKriegerConstraint *cons);
-//  void PhysicPart(KKriegerParticle *p);
-//  void PhysicDCell(KKriegerCellDynamic *cell);
+  void PhysicCons(KKriegerConstraint *cons);
+  void PhysicPart(KKriegerParticle *p);
+  void PhysicDCell(KKriegerCellDynamic *cell);
   KKriegerCellAdd *FindCell(const sVector &v);
 
-//  sBool FindFirstIntersect(const sVector &p0,sVector &p1,KKriegerCellAdd *&cadd,sVector *plane=0);
-//  sBool FindFirstIntersect(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd *&cadd,sVector &plane,sF32 &dist);
-//  sBool FindSubIntersect(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd **list,sInt count,sVector &plane,sF32 &dist);
-//  sBool FindSubIntersect2(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCell *cell,sVector &plane,sF32 &distresult);
-//  sBool IsFreeSpace(sVector &p,KKriegerCellAdd *cell);
-//  void CheckZones(sVector &p0,KKriegerCellAdd *c0,sVector &p1,KKriegerCellAdd *c1);
-
-  // new collision by exot
-
-  sBool CollideRay(KKriegerCellAdd *&cadd,const sVector &p1,const sVector &p0,KKriegerCollideInfo &ci);
-  sBool CollideRaySub(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd **list,sInt count,KKriegerCollideInfo &ci);
-  sBool CollideRaySub2(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCell *cell,KKriegerCollideInfo &ci);
-
-  sBool MoveCollider(KKSolidCollider &collider, const sVector &v,sInt who);
-  sBool MoveColliderX(KKSolidCollider &collider, const sVector &v,sInt who);
-  void CollideSoftSphereAdd(sVector &sphere, KKriegerCellAdd **cellList, sInt &count);
-  void CollideSoftSphereSub(sVector &sphere, KKriegerCell *cell);
-  void CollideSoftSphereFace(sVector &sphere, const sVector *vertices, int numVertices);
-  sBool CheckSphereVsFace(const sVector &sphere, const sVector *vertices, int numVertices, sVector &nearestPoint);
-  sBool CheckSphereVsEdge(const sVector &sphere, const sVector &v1, const sVector &v2, sVector &nearestPoint);
-  void CreateCollisionFaces(KKriegerCellAdd &add);
-  sBool SplitCollisionFace(const struct GenSimpleFace &face, const sVector *planes, sInt plane, sInt nPlanes, KKriegerCellAdd &add);
+  sBool FindFirstIntersect(const sVector &p0,sVector &p1,KKriegerCellAdd *&cadd,sVector *plane=0);
+  sBool FindFirstIntersect(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd *&cadd,sVector &plane,sF32 &dist,KKriegerParticle *part,KKriegerParticle *zonepart);
+  sBool FindSubIntersect(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCellAdd **list,sInt count,sVector &plane,sF32 &dist,KKriegerParticle *part,KKriegerParticle *zonepart);
+  sBool FindSubIntersect2(const sVector &d,const sVector &p1,const sVector &p0,KKriegerCell *cell,sVector &plane,sF32 &distresult);
+  void CheckZones(const sVector &p0,KKriegerCellAdd *c0,const sVector &p1,KKriegerCellAdd *c1,KKriegerParticle *part);
 };
 
 /****************************************************************************/
@@ -611,29 +497,6 @@ void __stdcall Exec_KKrieger_Events(KOp *op,KEnvironment *kenv);
 void __stdcall Exec_KKrieger_Respawn(KOp *op,KEnvironment *kenv,sF323 pos,sInt zone,sF32 dir);
 void __stdcall Exec_KKrieger_SplashDamage(KOp *op,KEnvironment *kenv,sInt hits,sF32 range,sF32 enable);
 void __stdcall Exec_KKrieger_MonsterFlags(KOp *op,KEnvironment *kenv,sInt kill,sInt spawn,sInt flags);
-
-/****************************************************************************/
-/***                                                                      ***/
-/***   Helpers                                                            ***/
-/***                                                                      ***/
-/****************************************************************************/
-
-
-struct KKriegerShot
-{
-  sInt Weapon;
-  sInt Mode;
-  sInt Who;                                 // isplayer or ismonster
-  sInt DoubleKill;
-
-  KEvent *Event;                            // link to event
-  KKriegerCellAdd *Cell;
-  sVector OldPos;
-  sVector Tensor;
-  sMatrix Matrix;
-
-  void Exit();
-};
 
 /****************************************************************************/
 /****************************************************************************/

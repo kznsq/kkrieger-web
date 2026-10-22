@@ -53,8 +53,9 @@ struct V2Glue
   unsigned char *Song;
 };
 
-// Size of a V2M up to the end of its patch map (the layout readfile() in
-// v2mconv.cpp walks); the player's songs carry no speech data.
+// Size of a V2M including its speech texts (the layout readfile() in
+// v2mconv.cpp walks). The 2004 player always reads the speech size after the
+// patch map and takes the texts when the size is between 1 and 8191.
 static int SongSize(const unsigned char *song)
 {
   const unsigned char *d = song;
@@ -74,6 +75,8 @@ static int SongSize(const unsigned char *song)
   }
   unsigned int globsize = *(const unsigned int *)d; d += 4 + globsize;
   unsigned int patchsize = *(const unsigned int *)d; d += 4 + patchsize;
+  unsigned int speechsize = *(const unsigned int *)d; d += 4;
+  if(speechsize && speechsize<8192) d += speechsize;
   return (int)(d-song);
 }
 
@@ -89,7 +92,7 @@ extern "C" void *v2_open(const void *song,int size,int rate)
   g->Song = 0;
   int outlen = 0;
   ConvertV2M((const unsigned char *)song,size,&g->Song,&outlen);   // old synth versions to the current one
-  g->Player.Init();
+  g->Player.Init(rate);             // positions are in samples (the sound effect bank's start positions), as the 2004 player takes them
   if(!g->Song || !g->Player.Open(g->Song,rate))
   {
     delete[] g->Song;

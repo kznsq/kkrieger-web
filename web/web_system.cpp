@@ -918,10 +918,23 @@ void sSystem_::SampleRemAll()
     Sample[i].Count = 0;
 }
 
+// DirectSound as the original sets it up: the volume in hundredths of a
+// decibel is 2000*ln(volume) (the natural logarithm, so quieter than linear),
+// the pan attenuates the other side by pan decibels; 3D samples have no pan.
 sInt sSystem_::SamplePlay(sInt handle,sF32 volume,sF32 pan,sInt freq)
 {
+  sInt d3dvol,d3dpan;
+  sF32 gain,left,right;
+
   if(handle<0 || !Sample[handle].Count) return -1;
-  return js_sample_play(handle,volume,pan,freq);
+  d3dvol = sMax<sInt>(sFLog(sRange(volume,1.0f,1e-20f))*20*100,-10000);
+  d3dpan = Sample[handle].Is3D ? 0 : sRange<sInt>(pan*100,10000,-10000);
+  gain = sFPow(10.0f,d3dvol/2000.0f);
+  left = gain;
+  right = gain;
+  if(d3dpan>0) left *= sFPow(10.0f,-d3dpan/2000.0f);
+  if(d3dpan<0) right *= sFPow(10.0f,d3dpan/2000.0f);
+  return js_sample_play(handle,left,right,freq);
 }
 
 void sSystem_::Sample3DParam(sInt handle,sInt buffer,const sVector &pos,const sVector &vel,sF32 minDist,sF32 maxDist)

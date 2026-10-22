@@ -1158,8 +1158,8 @@ GenBitmap * __stdcall Bitmap_Distort(GenBitmap *bb,GenBitmap *bm,sF32 dist,sInt 
   a = (sU16 *)in->Data;
 	xs = in->XSize;
 	ys = in->YSize;
-  bumpx = (dist*xs)*4;
-  bumpy = (dist*ys)*4;
+  bumpx = sFtol((dist*xs)*4);
+  bumpy = sFtol((dist*ys)*4);
   BilinearSetup(&ctx,(sU64 *)d,xs,ys,border);
 
 // rotate 
@@ -1248,8 +1248,8 @@ GenBitmap * __stdcall Bitmap_Normals(GenBitmap *bm,sF32 _dist,sInt mode)
         else
         {
           e = sFInvSqrt(vx*vx+vy*vy)*0x3fff;
-          vx *= e;
-          vy *= e;
+          vx = sFtol(vx*e);
+          vy = sFtol(vy*e);
           vz = 0;
         }
       }
@@ -1927,7 +1927,7 @@ GenBitmap * __stdcall Bitmap_Cell(sInt xs,sInt ys,sU32 col0,sU32 col1,sU32 col2,
         else
           v0 = 0;
       }
-      val = sRange7fff(sFPow(v0*amp,gamma)*0x8000)*2;
+      val = sRange7fff((sInt)(sS64)floorf(sFPow(v0*amp,gamma)*0x8000))*2;   // 2004 cast: 64-bit fistp, low 32 bits (overflow wraps)
       if(mode&4)
         val = 0x10000-val;
 
@@ -1976,7 +1976,7 @@ GenBitmap * __stdcall Bitmap_Gradient(sInt xs,sInt ys,sU32 col0,sU32 col1,sF32 p
 	cdx = sMulShift(dx,0x10000/bm->XSize);
 	cdy = sMulShift(dy,0x10000/bm->YSize)-bm->XSize*cdx;
   
-  c = 0x4000-(dx/2+dy/2)*(posf+1);
+  c = sFtol(0x4000-(dx/2+dy/2)*(posf+1));
 
   tile = bm->Data;
 	for(y=0;y<bm->YSize;y++)

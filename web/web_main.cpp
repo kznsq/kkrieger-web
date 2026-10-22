@@ -68,7 +68,7 @@ static void RenderSoundEffects(KDoc *doc,sU8 *data)
     for(i=0;i<count;i++)
     {
       start = ent->StartPos;
-      if(ent->LoopSize)
+      if(ent->LoopSize && !KKriegerRelease2004)
         start = ent->EndPos - ent->LoopSize;
       len = sMin<sInt>(ent->EndPos - start,maxsamples);
       ampx = sFPow(10.0f,(ent->Gain / 5.0f) / 20.0f);
@@ -76,7 +76,7 @@ static void RenderSoundEffects(KDoc *doc,sU8 *data)
       Sound->Play(ent->StartPos);
       Sound->Render(smpf,len);
       fade = 1000;
-      if(ent->MajorId & 1)
+      if((ent->MajorId & 1) && !KKriegerRelease2004)
         fade = 44100;
 
       for(j=0;j<len;j++)
@@ -91,7 +91,7 @@ static void RenderSoundEffects(KDoc *doc,sU8 *data)
         smps[j*2+1] = sRange<sInt>(smpf[j*2+1]*amp*0x7fff,0x7fff,-0x7fff);
       }
 
-      sSystem->SampleAdd(smps,len,4,ent->MinorId,!(ent->MajorId & 1));
+      sSystem->SampleAdd(smps,len,4,ent->MinorId,!(ent->MajorId & 1) && !KKriegerRelease2004);   // the 2004 sound layer has no 3D sound
       sSystem->Progress(doc->Ops.Count+i,doc->Ops.Count+count);
       ent++;
     }
@@ -273,26 +273,141 @@ extern "C" sInt kk_light_info(sF32 *out)
   return EngDebugLightCount;
 }
 
-// debug.js: player position and the moving collision cells (doors, monster
-// hit boxes): count, then per cell mode, centre and bounding box
+// debug.js: player position and the moving collision cells (doors, hit
+// boxes): count, then per cell mode, centre, blocked, monster, and the
+// first particle of each registered particle group (position, kind)
 extern "C" sInt kk_debug_coll(sF32 *out,sInt max)
 {
-  out[0] = Game->Player.Collider.Pos.x; out[1] = Game->Player.Collider.Pos.y; out[2] = Game->Player.Collider.Pos.z;
+  KKriegerParticle *p = &Game->Player.Body.Part[0];
+  out[0] = p->Pos.x; out[1] = p->Pos.y; out[2] = p->Pos.z;
   sInt n = 0;
   for(sInt i=0;i<Game->DCellUsed && n<max;i++,n++)
   {
     KKriegerCellDynamic *c = Game->DCellPtr[i];
     sF32 *d = out+3+n*10;
-    sVector mn = c->Vertices[0], mx = c->Vertices[0];
-    for(sInt k=1;k<8;k++)
-    {
-      mn.x = sMin(mn.x,c->Vertices[k].x); mn.y = sMin(mn.y,c->Vertices[k].y); mn.z = sMin(mn.z,c->Vertices[k].z);
-      mx.x = sMax(mx.x,c->Vertices[k].x); mx.y = sMax(mx.y,c->Vertices[k].y); mx.z = sMax(mx.z,c->Vertices[k].z);
-    }
     d[0] = c->Mode; d[1] = c->Center.x; d[2] = c->Center.y; d[3] = c->Center.z;
-    d[4] = mn.x; d[5] = mn.y; d[6] = mn.z; d[7] = mx.x; d[8] = mx.y; d[9] = mx.z;
+    d[4] = c->Blocked; d[5] = c->Monster ? 1 : 0;
+    d[6] = c->Monster ? c->Monster->Life : 0;
+    d[7] = c->Monster ? c->Monster->State : 0;
+    d[8] = d[9] = 0;
+  }
+  for(sInt i=0;i<Game->PartUsed && n<max;i++,n++)
+  {
+    KKriegerParticle *q = Game->PartPtr[i];
+    sF32 *d = out+3+n*10;
+    d[0] = -1; d[1] = q->Pos.x; d[2] = q->Pos.y; d[3] = q->Pos.z;
+    d[4] = q->Kind; d[5] = q->ShotEvent ? 1 : 0;
+    d[6] = q->OldCollPos.x; d[7] = q->OldCollPos.y; d[8] = q->OldCollPos.z; d[9] = q->Cell ? 1 : 0;
   }
   return n;
+}
+
+// debug.js: planes of moving cell i (count, mode, then x,y,z,w per plane)
+extern "C" sInt kk_debug_cell(sInt i,sF32 *out)
+{
+  if(i<0 || i>=Game->DCellUsed) return 0;
+  KKriegerCellDynamic *c = Game->DCellPtr[i];
+  out[0] = c->PlaneCount; out[1] = c->Mode;
+  for(sInt k=0;k<c->PlaneCount;k++)
+  {
+    out[2+k*4] = c->Planes[k].x; out[3+k*4] = c->Planes[k].y;
+    out[4+k*4] = c->Planes[k].z; out[5+k*4] = c->Planes[k].w;
+  }
+  return 1;
+}
+
+// debug.js: a ray through the level from the player's cell, as the game's
+// probes cast it; returns 1 and the hit point in out when something is hit
+extern "C" sInt kk_debug_ray(sF32 x0,sF32 y0,sF32 z0,sF32 x1,sF32 y1,sF32 z1,sF32 *out)
+{
+  sVector p0,p1,plane;
+  p0.Init(x0,y0,z0,1);
+  p1.Init(x1,y1,z1,1);
+  plane.Init(0,0,0,0);
+  KKriegerCellAdd *cell = Game->FindCell(p0);
+  if(!cell) return -1;
+  sBool hit = Game->FindFirstIntersect(p0,p1,cell,&plane);
+  out[0] = p1.x; out[1] = p1.y; out[2] = p1.z;
+  out[3] = plane.x; out[4] = plane.y; out[5] = plane.z;
+  return hit;
+}
+
+// debug.js: the sweep a player particle would make from p0 to p1; returns
+// MoveParticle's result and the end point in out
+extern "C" sInt kk_debug_sweep(sF32 x0,sF32 y0,sF32 z0,sF32 x1,sF32 y1,sF32 z1,sF32 *out)
+{
+  static KKriegerParticle part;
+  sVector p0,p1,zero;
+  p0.Init(x0,y0,z0,1);
+  p1.Init(x1,y1,z1,1);
+  zero.Init(0,0,0,0);
+  part.Init(p0,zero,Game->FindCell(p0));
+  if(!part.Cell) return -1;
+  part.Kind = KPK_PLAYERAUX;
+  part.EndMarker = 1;
+  part.SkipCell = &Game->Player.Body.HitCell;
+  part.Pos = p1;
+  sInt r = Game->MoveParticle(&part,0);
+  out[0] = part.Pos.x; out[1] = part.Pos.y; out[2] = part.Pos.z;
+  return r;
+}
+
+// debug.js: count registered particles whose last safe position is outside
+// the walkable space or inside a solid box (static subs of their add, or moving boxes
+// they don't skip); returns the total and writes the first offender to out
+extern "C" sInt kk_debug_check(sF32 *out)
+{
+  sInt outside=0,inside=0,total=0;
+  out[0] = out[1] = out[2] = out[3] = 0;
+  for(sInt i=0;i<Game->PartUsed;i++)
+  {
+    for(KKriegerParticle *p=Game->PartPtr[i];;p++)
+    {
+      total++;
+      const sVector &q = p->OldCollPos;
+      if(!Game->FindCell(q))
+      {
+        if(!outside && !inside) { out[0]=q.x; out[1]=q.y; out[2]=q.z; out[3]=p->Kind; }
+        outside++;
+      }
+      else if(p->Cell)
+      {
+        sBool in = sFALSE;
+        for(sInt k=0;k<p->Cell->Subs.Count;k++)
+          if(p->Cell->Subs[k]->Mode==KCM_SUB && !(p->Cell->Subs[k]->OnlyForShot && p->Kind>2) && p->Cell->Subs[k]->OutsideMask(q,-0.0002f)==0)
+            in = sTRUE;
+        for(sInt k=0;k<Game->DCellUsed;k++)
+        {
+          KKriegerCellDynamic *c = Game->DCellPtr[k];
+          if(c!=p->SkipCell && (c->Mode&~0x20)==KCM_SUB && !c->Monster && c!=&Game->Player.Body.HitCell && c->OutsideMask(q,-0.0002f)==0)
+            in = sTRUE;
+        }
+        if(in)
+        {
+          if(!outside && !inside) { out[0]=q.x; out[1]=q.y; out[2]=q.z; out[3]=p->Kind+100; }
+          inside++;
+        }
+      }
+      if(p->EndMarker) break;
+    }
+  }
+  out[4] = outside; out[5] = inside;
+  return total;
+}
+
+// debug.js: particle k of particle group g (Pos, OldCollPos, OldPos, cell inside)
+extern "C" sInt kk_debug_part(sInt g,sInt k,sF32 *out)
+{
+  if(g<0 || g>=Game->PartUsed) return 0;
+  KKriegerParticle *p = Game->PartPtr[g];
+  for(sInt i=0;i<k;i++)
+    if((p++)->EndMarker) return 0;
+  out[0] = p->Pos.x; out[1] = p->Pos.y; out[2] = p->Pos.z;
+  out[3] = p->OldCollPos.x; out[4] = p->OldCollPos.y; out[5] = p->OldCollPos.z;
+  out[6] = p->OldPos.x; out[7] = p->OldPos.y; out[8] = p->OldPos.z;
+  out[9] = p->Cell ? (p->Cell->OutsideMask(p->OldCollPos)==0 ? 1 : 2) : 0;
+  out[10] = p->Kind; out[11] = p->VerifyPos;
+  return 1;
 }
 
 extern "C" void kk_debug_teleport(sF32 x,sF32 y,sF32 z,sF32 dir)
