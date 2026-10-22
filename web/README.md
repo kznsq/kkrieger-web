@@ -6,6 +6,8 @@ The release is included, unmodified, in `original/`: `pno0001.exe` with its `rea
 
 ## Running it
 
+The page is published at https://kznsq.github.io/kkrieger-web/: on every push to `main`, the workflow in `../.github/workflows/pages.yml` copies the files the page loads at run time (`index.html`, the scripts, `kkrieger.wasm`, `kkrieger3383.kx` and `original/`) to GitHub Pages. To run it locally:
+
 ```sh
 python3 serve.py            # serves this folder on http://127.0.0.1:8737 with caching switched off
 ```

@@ -2,9 +2,11 @@
 
 The 2004 first-person shooter **.kkrieger** by .theprodukkt (96 KB, Breakpoint 2004), running in a web browser straight from the original executable. The page unpacks `pno0001.exe`, reads the game data inside it and plays it with Farbrausch's published player code compiled to WebAssembly, with WebGL 2 graphics and Web Audio sound. The game logic and the V2 synthesizer follow the 2004 executable rather than the later published source.
 
+**Play it online: https://kznsq.github.io/kkrieger-web/** (sound starts with the first click; Esc releases the mouse).
+
 The game is included: the beta release (`pno0001.exe` with its `readme.txt` and `scene.org.txt`) is in `web/original/`, unmodified, as .theprodukkt published it. The page loads it from there by itself; there is nothing to drop or choose.
 
-## Running
+## Running locally
 
 ```sh
 cd web
